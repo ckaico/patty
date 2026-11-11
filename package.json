@@ -1,0 +1,27 @@
+{
+  "name": "patty-mcp",
+  "version": "0.1.0",
+  "description": "Local MCP server that prepares a US provisional patent packet and a US trademark packet from a software repository, for the owner to file themselves.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "patty-mcp": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@expo-google-fonts/arimo": "^0.4.3",
+    "@expo-google-fonts/tinos": "^0.4.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "pdf-lib": "^1.17.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

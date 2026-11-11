@@ -1,0 +1,4 @@
+node_modules/
+patty-packet/
+.DS_Store
+*.log
