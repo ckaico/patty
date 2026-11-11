@@ -3,6 +3,8 @@ import { promises as dns } from "node:dns";
 import { join, resolve } from "node:path";
 import { DISCLAIMER, VERSION, now, readStatus, writeStatus, type Status } from "./packet.ts";
 import { SOURCES_CHECKED } from "./build.ts";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const TLDS = ["com", "net", "org", "io", "ai", "app", "dev", "co"];
 const UA = `patty-mcp/${VERSION} (local trademark knockout check)`;
@@ -133,6 +135,45 @@ async function checkNames(slug: string, mark: string): Promise<Finding[]> {
   return F;
 }
 
+// ---------- the USPTO register, through a third-party copy ----------
+// The USPTO has no public search API. GleanMark (gleanmark.com) indexes the USPTO's daily
+// trademark data file and answers name searches over MCP without a sign-in, rate-limited.
+// It is a third party: its copy can lag or be wrong, and the name search is not a
+// likelihood-of-confusion search.
+const REGISTER_URL = process.env.PATTY_TM_REGISTER_URL ?? "https://gleanmark.com/mcp";
+export type RegisterHit = { serial: string; mark: string; owner: string; type: string; status: string; filed: string; registration: string; classes: number[] };
+export type RegisterResult = { hits: RegisterHit[]; total?: number; through?: string; error?: string };
+
+export async function registerSearch(mark: string): Promise<RegisterResult> {
+  if (offline()) return { hits: [], error: "PATTY_OFFLINE=1" };
+  const client = new Client({ name: "patty-mcp", version: VERSION });
+  try {
+    const run = async () => {
+      await client.connect(new StreamableHTTPClientTransport(new URL(REGISTER_URL)));
+      return client.callTool({ name: "search_trademarks", arguments: { query: mark, status_filter: "all", limit: 20 } });
+    };
+    const r = (await Promise.race([run(), new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), 20000))])) as { content?: { text?: string }[]; isError?: boolean };
+    const text = (r.content ?? []).map((c) => c.text ?? "").join("\n");
+    if (r.isError) return { hits: [], error: clip(text, 120) || "the service returned an error" };
+    const line = text.split("\n").find((l) => l.trim().startsWith("{"));
+    const data = line ? json(line) : null;
+    if (!data || !Array.isArray(data.results)) return { hits: [], error: "the service answered in a form Patty does not recognise" };
+    const hits = data.results.map((x: any): RegisterHit => ({
+      serial: String(x.serial_number ?? ""), mark: String(x.mark_name ?? ""), owner: String(x.owner ?? ""), type: String(x.mark_type ?? ""),
+      status: String(x.status ?? ""), filed: String(x.filing_date ?? ""), registration: String(x.registration_number ?? ""),
+      classes: Array.isArray(x.nice_classes) ? x.nice_classes.map(Number) : [],
+    }));
+    return { hits, total: typeof data.total_count === "number" ? data.total_count : undefined, through: text.match(/data through (\d{4}-\d{2}-\d{2})/)?.[1] };
+  } catch (e) {
+    return { hits: [], error: (e as Error).message.replace(/\s+/g, " ").slice(0, 120) || "unreachable" };
+  } finally {
+    client.close().catch(() => {});
+  }
+}
+const tsdr = (serial: string) => `https://tsdr.uspto.gov/#caseNumber=${serial}&caseType=SERIAL_NO&searchType=statusSearch`;
+const isLive = (status: string) => /registered|pending|live|published|allowed/i.test(status) && !/dead|abandon|cancel|expired/i.test(status);
+const SOFTWARE_CLASSES = [9, 42];
+
 // ---------- class suggestion ----------
 function classHints(goods: string): string[] {
   const g = goods.toLowerCase();
@@ -159,11 +200,17 @@ export async function tmCheck(packetPath: string, mark: string, goods: string): 
 
   const domains = await Promise.all(names.flatMap((n) => TLDS.map((t) => checkDomain(`${n}.${t}`))));
   const findings = await checkNames(slug, mark);
-  const allFailed = offline() || (domains.every((d) => d.state === "unknown") && findings.every((f) => f.found === null));
+  const register = await registerSearch(mark);
+  const allFailed = offline() || (domains.every((d) => d.state === "unknown") && findings.every((f) => f.found === null) && !!register.error);
 
   const taken = domains.filter((d) => d.state === "registered");
   const live = taken.filter((d) => d.site?.startsWith("live site"));
   const stand: string[] = [];
+  const liveMarks = register.hits.filter((h) => isLive(h.status));
+  const exact = (h: RegisterHit) => h.mark.toLowerCase().replace(/[^a-z0-9]/g, "") === slug;
+  for (const h of liveMarks.filter((h) => exact(h) && h.classes.some((c) => SOFTWARE_CLASSES.includes(c)))) {
+    stand.push(`USPTO register: ${h.mark}, ${h.status.toLowerCase()}, owner ${h.owner}, class${h.classes.length === 1 ? "" : "es"} ${h.classes.join(", ")} (serial ${h.serial}). Same name in a software class. Look at this first.`);
+  }
   for (const d of live) stand.push(`${d.domain} is registered${d.registered ? ` (since ${d.registered})` : ""} and serves a ${d.site}.`);
   for (const f of findings) if (f.found && /package|crate|account/.test(f.where)) stand.push(`${f.where} exists: ${f.detail}`);
 
@@ -174,12 +221,23 @@ export async function tmCheck(packetPath: string, mark: string, goods: string): 
     "",
     `Checked ${new Date().toISOString()} for: ${goods}.`,
     "",
-    "A knockout looks for the obvious conflicts: the same name already in use where your customers would see it. It is not a clearance search. **It did not search the USPTO register**, because the USPTO offers no public search API; you run that search yourself with the link below. Whether two marks conflict turns on how alike the marks are and how related the goods or services are. That is a judgment for you or a trademark attorney, not for this file.",
+    "A knockout looks for the obvious conflicts: the same name already in use where your customers would see it. It is not a clearance search. The USPTO offers no public search API, so the register section below comes from a third party's copy of the USPTO data and covers the name as typed only: no sound-alikes, no translations, no logos. Run the USPTO's own search yourself with the link at the end. Whether two marks conflict turns on how alike the marks are and how related the goods or services are. That is a judgment for you or a trademark attorney, not for this file.",
     "",
   ];
   if (allFailed) K.push("**Search unavailable.** No lookup got an answer, so nothing was found and nothing was ruled out. Run it again when the network is up.", "");
   K.push("## What stands out", "");
   K.push(...(stand.length ? stand.map((s) => `- ${s}`) : [allFailed ? "- Nothing could be checked." : "- No exact-name domain with a live site, package or account turned up. That is not a clearance."]), "");
+  K.push("## USPTO register (name search, third-party copy)", "");
+  if (register.error) K.push(`Register lookup unavailable: ${register.error}. **The USPTO register was not searched.** Run the search yourself: ${TM_LINKS.search}`, "");
+  else {
+    K.push(`Source: GleanMark (gleanmark.com), which indexes the USPTO's daily trademark data file${register.through ? `; data through ${register.through}` : ""}. Not the USPTO itself. ${register.total ?? register.hits.length} record${(register.total ?? register.hits.length) === 1 ? "" : "s"} matched "${mark}"; ${register.hits.length} shown.`, "");
+    if (!register.hits.length) K.push("No records matched the name as typed. That is not a clearance: sound-alikes and similar marks were not searched.", "");
+    else {
+      K.push("| Mark | Status | Owner | Classes | Type | Filed | Serial (USPTO record) |", "|---|---|---|---|---|---|---|");
+      for (const h of register.hits) K.push(`| ${h.mark} | ${h.status} | ${h.owner.replace(/\|/g, "/")} | ${h.classes.join(", ")} | ${h.type} | ${h.filed} | [${h.serial}](${tsdr(h.serial)}) |`);
+      K.push("", "Software is usually class 9 (downloadable) or class 42 (online). A live mark with the same name in a class you need, for related goods or services, is a likely refusal. Open the USPTO record and read its goods and services.", "");
+    }
+  }
   K.push("## Domains", "", "| Domain | State | Registered | Registrar | What it serves | How Patty knows |", "|---|---|---|---|---|---|");
   for (const d of domains) K.push(`| ${d.domain} | ${d.state} | ${d.registered ?? ""} | ${(d.registrar ?? "").replace(/\|/g, "/")} | ${(d.site ?? "").replace(/\|/g, "/")} | ${d.how} |`);
   K.push("", "A registered domain is not a trademark, and a free domain does not clear one. A live business on the exact name, in a field near yours, is the thing to look at.", "");
@@ -189,7 +247,7 @@ export async function tmCheck(packetPath: string, mark: string, goods: string): 
     "",
     "## Searches you run yourself",
     "",
-    `- USPTO trademark search (the register, live and dead marks): ${TM_LINKS.search} . Search the exact mark, then spellings that sound the same, then the mark with your field's common words.`,
+    `- USPTO trademark search (the register itself, live and dead marks): ${TM_LINKS.search} . Search the exact mark, then spellings that sound the same, then the mark with your field's common words. Signed in, the same site has an image search (beta) for logos: upload the artwork and it returns similar marks.`,
     `- A web search for "${mark}" with words from your field, to find businesses using the name without a registration.`,
     "- Your state's business name records, and app stores if you ship an app.",
     "",
@@ -261,6 +319,12 @@ export async function tmCheck(packetPath: string, mark: string, goods: string): 
     const unk = domains.filter((d) => d.state === "unknown").map((d) => d.domain);
     if (unk.length) out.push(`Could not tell: ${unk.join(", ")}.`);
   }
-  out.push("", `The USPTO register was NOT searched (no public search API). The human runs that search: ${TM_LINKS.search}`, "Do not tell the human the mark is clear. Tell them what was found and what was not checked.");
+  if (register.error) out.push("", `The USPTO register was NOT searched (lookup unavailable: ${register.error}). The human runs that search: ${TM_LINKS.search}`);
+  else {
+    out.push("", `USPTO register, name as typed, from GleanMark's copy${register.through ? ` (data through ${register.through})` : ""}: ${register.hits.length} record${register.hits.length === 1 ? "" : "s"}, ${liveMarks.length} live.`);
+    for (const h of register.hits.slice(0, 12)) out.push(`  ${h.mark} · ${h.status} · ${h.owner} · classes ${h.classes.join(", ")} · serial ${h.serial}`);
+    out.push(`Sound-alikes, similar marks and logos were NOT searched. The human runs the USPTO's own search: ${TM_LINKS.search}`);
+  }
+  out.push("Do not tell the human the mark is clear. Tell them what was found and what was not checked.");
   return out.join("\n");
 }

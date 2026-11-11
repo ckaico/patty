@@ -18,7 +18,7 @@ const server = new McpServer(
     instructions:
       `Patty prepares a US provisional patent packet, or a US trademark packet, from a software repository. ` +
       `When the user asks to patent a repo, a codebase or "this", call patty_start with kind "provisional" first and follow the method it returns: ` +
-      `read the code, write EVIDENCE.md and SPECIFICATION.md, then patty_prior_art, patty_figures, patty_check and patty_build. ` +
+      `read the code, write EVIDENCE.md, search and chart prior art with patty_prior_art, write SPECIFICATION.md, then patty_figures, patty_check and patty_build. Never tell the user an invention is novel or patentable; report what the search found and how it differs. ` +
       `For a trademark, call patty_tm_check. The human approves the packet, then signs, pays and submits in their own USPTO account. ` +
       `Never sign, submit, pay or operate a USPTO account for them. ${DISCLAIMER}`,
   },
@@ -57,14 +57,18 @@ const packetArg = z
 server.registerTool(
   "patty_prior_art",
   {
-    title: "Search patents",
+    title: "Search and read prior art",
     description:
-      "Searches patents for each query and writes PRIOR_ART.md with titled, linked results. Best effort: if the search service is unreachable the file says \"search unavailable\" and the packet is not blocked. The query text is sent to Google Patents, so phrase queries as general mechanisms (\"first-seen index of token sequences to attribute retyped text\"), not product names or source code. Up to 8 queries.",
-    inputSchema: { queries: z.array(z.string().min(3)).min(1).max(8), packet_path: packetArg },
+      "Two jobs. queries: searches patents (Google Patents), papers (arXiv) and repositories (GitHub) for each query and adds the results to PRIOR_ART.md. fetch: reads references in full (patent publication numbers like US10013501B2, or URLs of papers, repositories or pages), stores each under references/ and returns its similar documents and citations to chase. Work in rounds: search, fetch the closest, chase their similar documents and citations, fetch again. Then write PRIOR_ART_CHART.md; patty_check verifies every quote in it against the stored text. Best effort: a failed search is written as \"search unavailable\" and does not block the packet. Query text is sent to those services, so phrase queries as general mechanisms, not product names or source code.",
+    inputSchema: {
+      queries: z.array(z.string().min(3)).max(8).optional().describe("Up to 8 searches. Phrase each the way a patent or paper would describe the mechanism."),
+      fetch: z.array(z.string().min(3)).max(12).optional().describe("Publication numbers or URLs to read in full and store under references/."),
+      packet_path: packetArg,
+    },
   },
-  async ({ queries, packet_path }) => {
+  async ({ queries, fetch, packet_path }) => {
     try {
-      return ok(await priorArt(requirePacket(packet_path ?? defaultPacket()), queries));
+      return ok(await priorArt(requirePacket(packet_path ?? defaultPacket()), queries ?? [], fetch ?? []));
     } catch (e) {
       return fail(e);
     }
@@ -99,7 +103,7 @@ server.registerTool(
   {
     title: "Check the packet",
     description:
-      "Lints the packet. Fails when a section of the specification has no file:line evidence, when a cited line does not exist or does not contain the cited text, when a reference numeral is in the specification and not in a figure or the reverse, when a placeholder remains, or when limiting language appears. patty_build will not run until this passes.",
+      "Lints the packet. Fails when a section of the specification has no file:line evidence, when a cited line does not exist or does not contain the cited text, when a quote in PRIOR_ART_CHART.md is not in the stored reference, when the chart's result contradicts its rows, when a reference numeral is in the specification and not in a figure or the reverse, when a placeholder remains, or when limiting language appears. patty_build will not run until this passes.",
     inputSchema: { packet_path: packetArg },
   },
   async ({ packet_path }) => {
@@ -141,7 +145,7 @@ server.registerTool(
   {
     title: "Trademark knockout",
     description:
-      "Trademark knockout for a mark: looks up exact-name domain registrations and what they serve, same-name packages (npm, PyPI, crates.io), GitHub accounts and repositories, and Wikipedia articles. Writes TM_KNOCKOUT.md and TM_FIELDS.md (mark, owner, filing basis, class and identification wording for the human to confirm, specimen checklist). It does not search the USPTO register, which has no public search API; it links to the USPTO search for the human to run. The mark is sent to those lookup services. Never report a mark as clear.",
+      "Trademark knockout for a mark: searches the USPTO register for the name as typed (through GleanMark, a third party that indexes the USPTO's daily data), and looks up exact-name domain registrations and what they serve, same-name packages (npm, PyPI, crates.io), GitHub accounts and repositories, and Wikipedia articles. Writes TM_KNOCKOUT.md and TM_FIELDS.md (mark, owner, filing basis, class and identification wording for the human to confirm, specimen checklist). It does not search sound-alikes, similar marks or logos; it links to the USPTO's own search for the human to run. The mark is sent to those lookup services. Never report a mark as clear.",
     inputSchema: {
       mark: z.string().min(1).describe("The word mark, as it would be registered."),
       goods_services: z.string().min(3).describe('Plain description of what it is used for, e.g. "downloadable software for scheduling payments by software agents".'),

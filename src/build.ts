@@ -163,7 +163,13 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
     "",
     "1. Read SPECIFICATION.md from start to finish. Whatever is not in the text and drawings on the filing date cannot be added later. If something you want protected is missing, have it added and run patty_check and patty_build again.",
     "2. Open EVIDENCE.md and spot-check a few citations against your code. patty_check confirmed each cited line exists; it did not judge whether the description is accurate.",
-    "3. Read PRIOR_ART.md. It is a quick search, not a patentability opinion.",
+    ...(result.chartPresent
+      ? [
+          "3. Read PRIOR_ART_CHART.md, then PRIOR_ART.md. The chart compares each mechanism with the closest references found, element by element; every quote in it was checked against the reference text. What it concluded:",
+          ...result.outcomes.map((o) => `   - ${o.name}: ${o.verdict}${o.ref ? ` (${o.ref}${o.refTitle ? `, "${o.refTitle}"` : ""}${o.refDate ? `, ${o.refDate}` : ""})` : ""}`),
+          "   Open the closest reference for the mechanism you care most about and read it yourself. This is a keyword search plus a comparison, not a patentability opinion: it cannot see products, documentation or code that are not indexed, and it does not judge obviousness or subject-matter eligibility. A registered patent practitioner can.",
+        ]
+      : ["3. Read PRIOR_ART.md. No comparison with prior art was made for this packet, so nothing here says whether the mechanisms are new. Run the searches linked in that file before you file."]),
     "4. Fix the dates in DOCKET.md. Confirm nothing was public, sold or offered earlier than it says.",
     "5. Fill in every field marked \"you enter this\" in COVER_SHEET.md, and decide your entity status.",
     `6. Open specification.pdf (${sp.pages} pages) and drawings.pdf (${dr.sheets} sheets) and look at every page. These are the files you upload.`,
@@ -213,6 +219,8 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
     `- drawings.pdf: ${dr.sheets} sheets`,
     "- COVER_SHEET.md, DOCKET.md, FILING_STEPS.md",
   ];
+  if (result.chartPresent) out.push("", "Prior art chart:", ...result.outcomes.map((o) => `- ${o.name}: ${o.verdict}${o.ref ? ` [${o.ref}]` : ""}`));
+  else out.push("", "No prior art chart: nothing in this packet says whether the mechanisms are new. Say so to the human.");
   const unknown: string[] = [];
   if (!inv.length) unknown.push("inventor names and residences");
   if (!dis && !facts.nothing_public_yet) unknown.push("the first public disclosure date");

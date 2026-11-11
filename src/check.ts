@@ -2,8 +2,10 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { figureFiles, numeralsOf, parseSvg } from "./figures.ts";
 import { now, readStatus, repoOf, writeStatus } from "./packet.ts";
+import { checkChart, CHART_FILE, type ChartOutcome } from "./chart.ts";
+import { readSearchLog } from "./priorart.ts";
 
-export type CheckResult = { passed: boolean; errors: string[]; warnings: string[]; report: string };
+export type CheckResult = { passed: boolean; errors: string[]; warnings: string[]; report: string; outcomes: ChartOutcome[]; chartPresent: boolean };
 
 // ---------- specification ----------
 export type Spec = {
@@ -284,6 +286,13 @@ export function check(packetPath: string, record = true): CheckResult {
     }
   }
 
+  // prior art chart
+  const log = readSearchLog(packet);
+  const evidenceIds = entries.map((e) => e.name.match(/^(E\d+)\b/i)?.[1]?.toUpperCase()).filter((x): x is string => !!x);
+  const chart = checkChart(packet, evidenceIds, log.some((q) => q.hits.length || q.papers?.length || q.code?.length), log.length > 0);
+  errors.push(...chart.errors);
+  warnings.push(...chart.warnings);
+
   // figures and numerals
   const figNumerals = new Map<number, Set<number>>();
   const figNumbers = figs.map((f) => f.number);
@@ -329,9 +338,13 @@ export function check(packetPath: string, record = true): CheckResult {
   if (specText) R.push(`Specification: ${specText.split(/\s+/).filter(Boolean).length} words, ${spec.sections.length} numbered sections.`);
   if (evText) R.push(`Evidence: ${entries.length} entries, ${entries.reduce((a, e) => a + e.citations.length, 0)} citations opened and compared with the files.`);
   R.push(`Figures: ${figs.length}${figs.length ? " (" + figs.map((f) => `FIG. ${f.number}`).join(", ") + ")" : ""}.`);
+  if (chart.present) {
+    R.push(`Prior art chart: ${chart.mechanisms} mechanism${chart.mechanisms === 1 ? "" : "s"} compared with ${chart.references} reference${chart.references === 1 ? "" : "s"}; ${chart.quotes} quote${chart.quotes === 1 ? "" : "s"} found in the stored reference text.`);
+    for (const o of chart.outcomes) R.push(`  - ${o.name}: ${o.verdict}${o.ref ? ` [${o.ref}${o.refDate ? `, ${o.refDate}` : ""}]` : ""}`);
+  } else R.push(`Prior art chart: none.`);
   if (errors.length) R.push("", "Errors (each one blocks patty_build):", ...errors.map((e) => `- ${e}`));
   if (warnings.length) R.push("", "Warnings (do not block):", ...warnings.map((w) => `- ${w}`));
-  if (passed) R.push("", "What this check does not do: it confirms each citation exists and each numeral matches. It does not judge whether the specification says only what the evidence supports, or whether the invention is new. A person has to read it.");
+  if (passed) R.push("", "What this check does not do: it confirms each citation exists and each numeral matches. It confirms each quote in the prior art chart is in the reference it is attributed to. It does not judge whether the specification says only what the evidence supports, whether a quote really discloses the element it is set against, or whether the invention is new or patentable. A search that finds nothing is not a clearance. A person has to read it.");
 
   if (record) {
     const s = readStatus(packet);
@@ -342,5 +355,5 @@ export function check(packetPath: string, record = true): CheckResult {
       writeStatus(packet, s);
     }
   }
-  return { passed, errors, warnings, report: R.join("\n") };
+  return { passed, errors, warnings, report: R.join("\n"), outcomes: chart.outcomes, chartPresent: chart.present };
 }

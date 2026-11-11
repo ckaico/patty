@@ -1,6 +1,6 @@
 {
   "name": "patty-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local MCP server that prepares a US provisional patent packet and a US trademark packet from a software repository, for the owner to file themselves.",
   "type": "module",
   "private": true,

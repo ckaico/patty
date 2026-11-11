@@ -36,16 +36,29 @@ Pass packet_path (the packet folder reported at the top of this message) to ever
 1. Read the repo map below, then read the source files themselves, largest and most
    central first. Read whole files, not excerpts, for anything you will cite.
 2. Write patty-packet/EVIDENCE.md (format below). Rank mechanisms strongest first.
-3. Call patty_prior_art with 3 to 6 queries, one per strong mechanism, phrased the way a
-   patent would phrase it. Read what comes back; if something is close, say so in
-   PRIOR_ART.md under "Notes" and make sure the specification describes the difference.
+3. Search for prior art, in rounds, before you write the specification:
+   a. Call patty_prior_art with queries: two or three per strong mechanism, each phrased
+      the way a patent or paper would describe it, in different words each time. Describe
+      the general mechanism; do not send product names or code.
+   b. Call patty_prior_art with fetch: the publication numbers or URLs of the closest
+      results. Each fetched patent comes back with its similar documents and citations.
+   c. Chase: fetch the most promising of those. The closest reference is usually one or
+      two steps from the first hit. Stop when a round turns up nothing closer.
+   d. Read each fetched file under references/: abstract and claims first, then search
+      the description for each element.
+   e. Write patty-packet/PRIOR_ART_CHART.md (format below). Be hard on your own
+      mechanism: if a reference has the element in other words, that is a "yes".
+   If a mechanism is knocked out, do not lead with it. Build the specification around
+   what the closest references lack, and say what that difference is.
+   If the search was unavailable, say so to the human and carry on without a chart.
 4. Write patty-packet/SPECIFICATION.md (format below).
 5. Call patty_figures with one figure per drawing.
 6. Call patty_check. Fix every error it reports and call it again until it passes.
 7. Call patty_build. Pass what the human has told you (inventors, first public
    disclosure). Do not invent any of it; leave out what you do not know.
-8. Tell the human what is in the packet, what you could not verify, and that
-   FILING_STEPS.md is theirs to follow. Stop there.
+8. Tell the human what is in the packet, the result for each mechanism in the prior art
+   chart (knocked out, closest reference and difference, or nothing close found), what
+   you could not verify, and that FILING_STEPS.md is theirs to follow. Stop there.
 
 ## EVIDENCE.md format (patty_check parses this)
 \`\`\`
@@ -64,6 +77,44 @@ Two sentences: what the code does and why it is not the obvious way.
   patty_check opens the file and fails the packet if the text is not there. Whitespace
   differences are ignored, nothing else is.
 - Every entry needs at least one citation.
+
+## PRIOR_ART_CHART.md format (patty_check parses this)
+\`\`\`
+# Prior art chart
+
+## M1. Short name of the mechanism
+Evidence: E1
+- A. First element, one plain clause.
+- B. Second element.
+- C. Third element.
+
+### US10013501B2
+- A: yes | words copied from the reference that show it has A
+- B: partly | words copied from the reference
+- C: no
+
+### arxiv-2401.01234
+- A: yes | words copied from the reference
+- B: no
+- C: no
+
+Result: closest US10013501B2; differs in B, C
+\`\`\`
+- Break each mechanism into 2 to 6 elements. An element is one thing the code does that a
+  reference either has or lacks.
+- A reference heading is the name patty_prior_art gave it when it was fetched. Only
+  fetched references can be charted.
+- Every element gets a row under every reference: "yes | quote", "partly | quote" or "no".
+  The quote is copied from the stored reference text; patty_check fails the packet if the
+  words are not there. A "no" is your reading of the whole reference; say "no" only after
+  searching the file for the element in other words.
+- Result is one of exactly three forms:
+  "Result: knocked out by <reference>" when one reference has every element;
+  "Result: closest <reference>; differs in B, C";
+  "Result: nothing close found".
+- Chart every evidence entry. Never write that a mechanism is novel or patentable. The
+  chart says what was found and how it differs; a search that finds nothing is not a
+  clearance.
 
 ## SPECIFICATION.md format (patty_check parses this)
 Use these second-level headings, in this order:
@@ -163,11 +214,12 @@ export const PROMPT_PATENT_THIS_REPO = (repo: string) => `Patent this repo with 
 Work through the Patty tools in this order and do not skip the check:
 1. patty_start with kind "provisional". Read the method it returns and follow it.
 2. Read the source code. Write patty-packet/EVIDENCE.md, strongest mechanism first.
-3. patty_prior_art with a query per strong mechanism.
-4. Write patty-packet/SPECIFICATION.md.
+3. patty_prior_art in rounds: search, fetch the closest references, chase their similar
+   documents and citations. Then write patty-packet/PRIOR_ART_CHART.md.
+4. Write patty-packet/SPECIFICATION.md around what the closest references lack.
 5. patty_figures for the drawings.
 6. patty_check, fix, repeat until it passes.
 7. patty_build.
 
-Then tell me what the packet covers, strongest first, what you could not verify, and what
-is left for me. I sign, pay and submit myself; do not do any of that for me.`;
+Then tell me what the packet covers, strongest first, what the prior art chart found for
+each mechanism, what you could not verify, and what is left for me. I sign, pay and submit myself; do not do any of that for me.`;

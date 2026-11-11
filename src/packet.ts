@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 export const PACKET_DIR = "patty-packet";
 export const DISCLAIMER =
   "Patty prepares documents for you to file yourself. It is not a law firm and this is not legal advice.";

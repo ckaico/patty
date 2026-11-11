@@ -228,6 +228,95 @@ describe("patty_check", () => {
   test("a figure the text never introduces fails", () => failsWith("SPECIFICATION.md", SPEC, SPEC.replace("- FIG. 2 is a flowchart of two-stage eviction.\n", ""), /FIG\. 2 is in figures\/ but the Brief Description/));
 });
 
+describe("prior art chart", () => {
+  const REF = `Reference: US0000001A
+Title: Cache with expiry
+Kind: patent
+Source: https://example.invalid/US0000001A
+Date: 2001-01-01 (priority date, as the source lists it)
+Fetched: 2026-01-01
+
+## Abstract
+A cache in which entries whose time to live has elapsed are deleted before any other entry.
+
+## Claims
+1. A method comprising deleting the least recently used entry when the cache is full.
+
+## Related documents
+
+### Similar documents (as the source lists them)
+- US0000002A lowest hit count eviction
+`;
+  const CHART = `# Prior art chart
+
+## M1. Two-stage eviction
+Evidence: E1
+- A. Expired entries are removed before any live entry.
+- B. A live entry is removed only if the store is still full.
+- C. The live entry removed is the one with the lowest hit count.
+
+### US0000001A
+- A: yes | entries whose time to live has elapsed are deleted before any other entry
+- B: no
+- C: partly | deleting the least recently used entry when the cache is full
+
+Result: closest US0000001A; differs in B, C
+
+## M2. Store and lookup
+Evidence: E2
+- A. Entries carry an expiry time.
+- B. A lookup of an expired entry deletes it.
+
+Result: nothing close found
+`;
+  const withChart = (chart: string | null, fn: (r: ReturnType<typeof check>) => void, log?: unknown) => {
+    mkdirSync(join(packet, "references"), { recursive: true });
+    writeFileSync(join(packet, "references", "US0000001A.txt"), REF);
+    if (log) writeFileSync(join(packet, "references", "search.json"), JSON.stringify(log));
+    if (chart !== null) write("PRIOR_ART_CHART.md", chart);
+    try {
+      fn(check(packet, false));
+    } finally {
+      rmSync(join(packet, "references"), { recursive: true, force: true });
+      rmSync(join(packet, "PRIOR_ART_CHART.md"), { force: true });
+    }
+  };
+  test("a chart whose quotes are in the reference passes and reports each result", () =>
+    withChart(CHART, (r) => {
+      expect(r.errors).toEqual([]);
+      expect(r.outcomes.map((o) => o.verdict)).toEqual([
+        "closest reference lacks: B (A live entry is removed only if the store is still full.); C (The live entry removed is the one with the lowest hit count.)",
+        "nothing close found among 0 references read; not a clearance",
+      ]);
+      expect(r.report).toContain("2 quotes found in the stored reference text");
+    }));
+  test("a quote that is not in the reference fails", () =>
+    withChart(CHART.replace("deleted before any other entry", "deleted before live entries, in two stages"), (r) => expect(r.errors.join("\n")).toMatch(/is not in references\/US0000001A\.txt/)));
+  test("a quote from the related-documents list does not count", () =>
+    withChart(CHART.replace("- C: partly | deleting the least recently used entry when the cache is full", "- C: yes | lowest hit count eviction"), (r) => expect(r.errors.join("\n")).toMatch(/is not in references/)));
+  test("a reference that was never fetched cannot be charted", () =>
+    withChart(CHART.replace("### US0000001A", "### US9999999B2"), (r) => expect(r.errors.join("\n")).toMatch(/references\/US9999999B2\.txt does not exist/)));
+  test("every element yes means knocked out, whatever the result line says", () =>
+    withChart(CHART.replace("- B: no", "- B: yes | deleting the least recently used entry when the cache is full").replace("- C: partly", "- C: yes"), (r) => expect(r.errors.join("\n")).toMatch(/has to be "knocked out by US0000001A"/)));
+  test("a knockout is reported loudly but is the human's call", () =>
+    withChart(CHART.replace("- B: no", "- B: yes | deleting the least recently used entry when the cache is full").replace("- C: partly", "- C: yes").replace("Result: closest US0000001A; differs in B, C", "Result: knocked out by US0000001A"), (r) => {
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join("\n")).toMatch(/knocked out by US0000001A/);
+    }));
+  test("a missing row and a made-up result form fail", () => {
+    withChart(CHART.replace("- B: no\n", ""), (r) => expect(r.errors.join("\n")).toMatch(/no row for element B/));
+    withChart(CHART.replace("Result: nothing close found", "Result: novel"), (r) => expect(r.errors.join("\n")).toMatch(/not one of the three forms/));
+  });
+  test("search results with no chart block the build; no search only warns", () => {
+    const hit = [{ query: "q", at: "2026-01-01", hits: [{ title: "t", number: "US0000001A", link: "x" }], papers: [], code: [] }];
+    withChart(null, (r) => expect(r.errors.join("\n")).toMatch(/PRIOR_ART_CHART\.md is missing/), hit);
+    withChart(null, (r) => {
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join("\n")).toMatch(/No prior art search was run/);
+    });
+  });
+});
+
 describe("patty_build", () => {
   test("refuses while the check fails", async () => {
     write("SPECIFICATION.md", SPEC.replace("in-memory caches", "caches in [CITY]"));
@@ -280,7 +369,7 @@ describe("patty_prior_art and patty_tm_check without a network", () => {
     const out = await tmCheck(packet, "Examplemark", "online software for testing");
     expect(out).toContain("Search unavailable");
     const k = readFileSync(join(packet, "TM_KNOCKOUT.md"), "utf8");
-    expect(k).toContain("It did not search the USPTO register");
+    expect(k).toContain("The USPTO register was not searched");
     expect(readFileSync(join(packet, "TM_FIELDS.md"), "utf8")).toContain("Class 42");
   });
 });
