@@ -1,6 +1,6 @@
-# patty-mcp
+# Patty
 
-Last updated: 2026-11-10 · version 0.5.0 · not published
+Version 0.5.0
 
 A local MCP server for software inventions. It reads a repository with you and does three jobs:
 
@@ -37,6 +37,12 @@ A product is covered by a claim only if it has every element of it. The chart sh
 
 Needs [bun](https://bun.sh) 1.1 or later. Built and tested on bun 1.4.2, macOS. Node is not required.
 
+Clone the repository, then from its folder:
+
+```bash
+git clone https://github.com/ckaico/patty && cd patty
+```
+
 ```bash
 bun install
 ```
@@ -65,13 +71,13 @@ Patty has no accounts of its own. Every outside service is the user's: they sign
 | Domain registries, npm, PyPI, crates.io, Wikipedia | Trademark knockout | None |
 | USPTO Open Data Portal, EPO OPS, PQAI | Listed, with the reason each is not built in | n/a |
 
-Keys go in `~/.patty/`, one file per service (`serpapi_key`, `github_token`), or in `PATTY_SERPAPI_KEY` and `PATTY_GITHUB_TOKEN`. They are read when a request is made and never written to a packet or an error message.
+Keys go in `~/.patty/`, one file per service (`serpapi_key`, `github_token`), or in `PATTY_SERPAPI_KEY` and `PATTY_GITHUB_TOKEN`. `PATTY_HOME` moves the folder. They are read when a request is made and never written to a packet or an error message.
 
 Hosted patent and trademark connectors with their own sign-in (GleanMark, Clarivate CompuMark, Haloo, Clerq, Patlytics, Solve Intelligence, IP Author) are not something Patty can log in to. The user adds them to their MCP host. When one is present in the session, the drafting method tells the host model to search with it too and to bring what it finds into Patty's charts, where quotes are checked. None was tested with an account.
 
 ### A dependable patent source (recommended)
 
-Without a key, patents come from Google Patents' own pages, which refuse requests after a burst; on a real run that cut the patent comparison off entirely. With a [SerpApi](https://serpapi.com) key, the same search and the same full text come through their API. Their pricing page lists a free plan of 250 searches a month; a run on a mid-sized repo used about 40 patent requests.
+Without a key, patents come from Google Patents' own pages, which refuse requests after a burst; on one real run that cut the patent comparison off entirely. With a [SerpApi](https://serpapi.com) key, the same search and the same full text come through their API. Their pricing page lists a free plan of 250 searches a month; a run on a mid-sized repo used about 40 patent requests.
 
 Put the key in a file only you can read. Copy it from your SerpApi dashboard, then:
 
@@ -118,6 +124,8 @@ patty-packet/
 ```
 
 The numbered steps end sign, submit, pay, in that order, because that is the order of Patent Center's screens: the fee is paid after the submission receipt.
+
+No example packet is included in this repository. A packet describes an invention, and an unfiled one does not belong in a public repository.
 
 ### File formats
 
@@ -255,7 +263,7 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 ## Tested
 
 - `patty_sources` with `test: true`, live, no keys set: the direct patent pages, arXiv, GitHub and GleanMark each answered; SerpApi reported no key.
-- `bun test`: 44 tests on a made-up cache repository, no network. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear". Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
+- `bun test`: 44 tests on a small sample cache repository, no network. They cover the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear".
 - `bun run typecheck`: strict TypeScript.
 - Figure port: six existing figures (two hand-placed diagrams, four flowcharts) were re-expressed as figure JSON and rendered; each matched the original element for element. One deliberate difference: double-headed arrows now point outward at both ends.
 - The check was run against an existing hand-written provisional draft. It found one placeholder and six reference numerals that were in the figures and never in the text.
@@ -263,8 +271,8 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 - End to end: a fresh Claude Code session in a copy of a real repository of about 17,000 lines, given only "patent this repo", produced a packet in 34 turns that passes `patty_check` (8 evidence entries, 53 citations, 6 figures) and ends at `FILING_STEPS.md`. The patent search was switched off for that run.
 - `patty_start` on a git repository with two remotes: the public one was reported public, the other not, and a token embedded in a remote URL did not appear in the output.
 - `patty_prior_art`: a live query returned titled, linked results; with the endpoint pointed at a closed port the file said "Search unavailable" and the tool did not fail.
-- End to end with search on (2026-11-10): a fresh session on a made-up 39-line cache repository searched in rounds, fetched ten references, and wrote a chart of three mechanisms against four references with 21 checked quotes. Each mechanism came back with a close reference and a narrow difference, and the session reported the differences as thin. Three follow-up fetches failed with HTTP 503 and GitHub search was rate-limited on four of eight queries; both now retry or say so.
-- Build-around, end to end (2026-11-10): a fresh session asked to build around a real, active cache-eviction patent on the made-up repository fetched it, charted all four independent claims (27 code citations), found no claim with every element in the code, singled out the one claim that was close and why, and listed three options with what each costs. 13 turns, about 2 minutes.
+- End to end with search on (2026-11-10): a fresh session on a 39-line sample cache repository searched in rounds, fetched ten references, and wrote a chart of three mechanisms against four references with 21 checked quotes. Each mechanism came back with a close reference and a narrow difference, and the session reported the differences as thin. Three follow-up fetches failed with HTTP 503 and GitHub search was rate-limited on four of eight queries; both now retry or say so.
+- Build-around, end to end (2026-11-10): a fresh session asked to build around a real, active cache-eviction patent on the sample repository fetched it, charted all four independent claims (27 code citations), found no claim with every element in the code, singled out the one claim that was close and why, and listed three options with what each costs. 13 turns, about 2 minutes.
 - `patty_prior_art` fetch: a patent (87,000 characters, with 25 similar documents and its citations), an arXiv paper (abstract) and a GitHub repository (README) were each stored and listed.
 - `patty_tm_check` on "Argyle": reported two registered ARGYLE marks and one pending in software classes from the register, the existing company at argyle.com, and eight registered domains.
 
@@ -311,8 +319,6 @@ src/claimchart.ts  claim chart rules (a patent against this repo)
 src/packet.ts    packet folder and STATUS.json
 ```
 
-## Open decisions
+## License
 
-- Package and repository name.
-- License. None is set; `package.json` is marked private.
-- No example packet is included. A packet describes an invention, and an unfiled one does not belong in a public repository.
+Apache License 2.0. See `LICENSE` and `NOTICE`.
