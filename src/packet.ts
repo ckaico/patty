@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 export const PACKET_DIR = "patty-packet";
 export const DISCLAIMER =
   "Patty prepares documents for you to file yourself. It is not a law firm and this is not legal advice.";
 
-export type Kind = "provisional" | "trademark";
+export type Kind = "provisional" | "trademark" | "clearance";
 
 export type Status = {
   notice?: string;
@@ -78,7 +78,9 @@ export function initPacket(repoPath: string, kind: Kind): { packet: string; crea
   status.waiting_on_human =
     kind === "provisional"
       ? ["Nothing yet. The packet is still being drafted."]
-      : ["Nothing yet. The trademark check has not been run."];
+      : kind === "clearance"
+        ? ["Nothing yet. The claim chart has not been written."]
+        : ["Nothing yet. The trademark check has not been run."];
   writeStatus(packet, status);
   return { packet, created, status };
 }

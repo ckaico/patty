@@ -12,8 +12,9 @@ export type Mechanism = {
   name: string; lineNo: number; evidence: string[]; hasEvidenceLine: boolean;
   elements: { letter: string; text: string }[]; refs: ChartRef[];
   result?: { kind: "knocked" | "closest" | "nothing" | "unknown"; ref?: string; letters: string[]; raw: string; lineNo: number };
+  protect?: { call: string; reason: string; lineNo: number };
 };
-export type ChartOutcome = { name: string; verdict: string; ref?: string; refTitle?: string; refDate?: string };
+export type ChartOutcome = { name: string; verdict: string; ref?: string; refTitle?: string; refDate?: string; protect?: string };
 export type ChartCheck = { present: boolean; errors: string[]; warnings: string[]; outcomes: ChartOutcome[]; mechanisms: number; references: number; quotes: number };
 
 export const CHART_FILE = "PRIOR_ART_CHART.md";
@@ -50,6 +51,12 @@ export function parseChart(text: string): Mechanism[] {
       else if (c) mech.result = { kind: "closest", ref: c[1], letters: [...c[2].matchAll(/\b([A-Z])\b/g)].map((m) => m[1]), raw, lineNo: i + 1 };
       else if (/^nothing close found/i.test(raw)) mech.result = { kind: "nothing", letters: [], raw, lineNo: i + 1 };
       else mech.result = { kind: "unknown", letters: [], raw, lineNo: i + 1 };
+      ref = null;
+      return;
+    }
+    const pr = line.match(/^\s*(?:\*\*)?Protect(?:\*\*)?\s*:\s*(\w+)\s*(?:\|\s?(.*))?$/i);
+    if (pr) {
+      mech.protect = { call: pr[1].toLowerCase(), reason: (pr[2] ?? "").trim(), lineNo: i + 1 };
       ref = null;
       return;
     }
@@ -134,6 +141,16 @@ export function checkChart(packet: string, evidenceIds: string[], searchFoundSom
       r.outcomes.push({ name: m.name, verdict: `nothing close found among ${m.refs.length} reference${m.refs.length === 1 ? "" : "s"} read; not a clearance` });
     }
   }
+  // The call on whether each mechanism is worth protecting is the host's judgment, written down so the human can disagree with it.
+  mechs.forEach((m, i) => {
+    const p = m.protect;
+    const where = `${CHART_FILE} "${m.name}"`;
+    if (!p) r.errors.push(`${where}: no "Protect:" line. Write "Protect: yes | reason", "Protect: maybe | reason" or "Protect: no | reason".`);
+    else if (!["yes", "maybe", "no"].includes(p.call)) r.errors.push(`${CHART_FILE} line ${p.lineNo}: Protect is "yes", "maybe" or "no", then " | " and the reason.`);
+    else if (p.reason.replace(/\s/g, "").length < 15) r.errors.push(`${CHART_FILE} line ${p.lineNo}: give the reason after " | ": what a competitor would have to copy, and whether you could tell from outside that they had.`);
+    else if (m.result?.kind === "knocked" && p.call !== "no") r.errors.push(`${CHART_FILE} line ${p.lineNo}: "${m.name}" is knocked out, so Protect has to be "no".`);
+    else if (r.outcomes[i]) r.outcomes[i].protect = `${p.call}: ${p.reason}`;
+  });
   r.references = seenRefs.size;
   for (const e of evidenceIds) if (!charted.has(e)) r.warnings.push(`EVIDENCE.md entry ${e} is not charted against any prior art in ${CHART_FILE}.`);
   return r;

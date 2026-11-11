@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { initPacket, PACKET_DIR, readStatus, writeStatus, type Kind } from "./packet.ts";
-import { PROVISIONAL_METHOD, TRADEMARK_METHOD } from "./method.ts";
+import { CLEARANCE_METHOD, PROVISIONAL_METHOD, TRADEMARK_METHOD } from "./method.ts";
 import { repoMap } from "./repomap.ts";
 
 // Keeps the packet out of version control: an unfiled disclosure should not be pushed.
@@ -36,5 +36,5 @@ export async function start(repoPath: string, kind: Kind, checkRemotes = true): 
     status.facts = { ...(status.facts ?? {}), repo_evidence: section.split("\n").filter((l) => l.trim()) };
     writeStatus(packet, status);
   }
-  return [...head, PROVISIONAL_METHOD, "", map].join("\n");
+  return [...head, kind === "clearance" ? CLEARANCE_METHOD : PROVISIONAL_METHOD, "", map].join("\n");
 }

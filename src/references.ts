@@ -13,6 +13,7 @@ export type Related = { id: string; title: string; date?: string };
 export type Reference = {
   slug: string; kind: "patent" | "paper" | "code" | "page"; title: string; source: string;
   date?: string; dateLabel?: string; body: string; cites?: Related[]; citedBy?: Related[]; similar?: Related[];
+  status?: string; expiration?: string; owner?: string; independent?: number[];
 };
 
 const ENT: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "...", mdash: "—", ndash: "–", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“" };
@@ -59,10 +60,28 @@ async function fetchPatent(id: string): Promise<Reference> {
       title: htmlToText(m[1].match(/itemprop="title">([^<]*)/)?.[1] ?? ""),
       date: m[1].match(/itemprop="priorityDate">([^<]*)/)?.[1],
     })).filter((r) => r.id);
-  const abstract = section("abstract"), claims = section("claims"), description = section("description");
+  const abstract = section("abstract"), description = section("description");
+  // Each claim is kept apart and marked independent or dependent, so a claim chart can be checked claim by claim.
+  const claimsHtml = html.match(/<section itemprop="claims"[^>]*>([\s\S]*?)<\/section>/)?.[1] ?? "";
+  const starts = [...claimsHtml.matchAll(/<div[^>]*\bid="CLM-\d+"[^>]*\bnum="0*(\d+)"[^>]*>/g)];
+  const independent: number[] = [];
+  const claimBlocks = starts.map((m, i) => {
+    const n = Number(m[1]);
+    const text = htmlToText(claimsHtml.slice(m.index!, starts[i + 1]?.index ?? claimsHtml.length)).replace(/\s*\n\s*/g, " ").trim();
+    const before = claimsHtml.slice(Math.max(0, m.index! - 80), m.index!);
+    const dependent = /claim-dependent/.test(before) || /^\d+\.\s.{0,140}\b(?:of|in|to|by)\s+(?:any\s+(?:one\s+)?of\s+)?claims?\s+\d+/i.test(text);
+    if (!dependent) independent.push(n);
+    return `### Claim ${n} (${dependent ? "dependent" : "independent"})\n${text}`;
+  });
+  const claims = claimBlocks.length ? claimBlocks.join("\n\n") : section("claims").replace(/^Claims\s*\(\d+\)\s*/i, "");
   if (!abstract && !claims && !description) throw new Error("the page had no abstract, claims or description");
-  const body = [`## Abstract\n${abstract}`, `## Claims\n${claims.replace(/^Claims\s*\(\d+\)\s*/i, "")}`, `## Description\n${description.replace(/^Description\s*/i, "")}`].join("\n\n");
-  return { slug: id, kind: "patent", title, source, date: priority ?? filing, dateLabel: priority ? "priority date" : "filing date", body, cites: rows("backwardReferencesOrig"), citedBy: rows("forwardReferencesOrig"), similar: rows("similarDocuments") };
+  const body = [`## Abstract\n${abstract}`, `## Claims\n${claims}`, `## Description\n${description.replace(/^Description\s*/i, "")}`].join("\n\n");
+  const prop = (name: string) => htmlToText(html.match(new RegExp(`itemprop="${name}"[^>]*>([^<]*)`))?.[1] ?? "").trim() || undefined;
+  return {
+    slug: id, kind: "patent", title, source, date: priority ?? filing, dateLabel: priority ? "priority date" : "filing date", body,
+    cites: rows("backwardReferencesOrig"), citedBy: rows("forwardReferencesOrig"), similar: rows("similarDocuments"),
+    status: prop("status") ?? prop("ifiStatus"), expiration: html.match(/<time itemprop="expiration"[^>]*>([^<]*)/)?.[1] ?? prop("expiration"), owner: prop("assigneeCurrent") ?? prop("assigneeOriginal"), independent,
+  };
 }
 
 async function fetchArxiv(id: string): Promise<Reference> {
@@ -120,6 +139,14 @@ export function saveReference(packet: string, ref: Reference): string {
     `Source: ${ref.source}`,
     `Date: ${ref.date ? `${ref.date} (${ref.dateLabel}, as the source lists it)` : "not known"}`,
     `Fetched: ${today()}`,
+    ...(ref.kind === "patent"
+      ? [
+          `Status: ${ref.status ?? "not listed"} (as Google Patents lists it; confirm in USPTO Patent Center before relying on it)`,
+          `Expiration: ${ref.expiration ?? "not listed"}`,
+          `Owner: ${ref.owner ?? "not listed"}`,
+          `Independent claims: ${ref.independent?.length ? ref.independent.join(", ") : "not identified"}`,
+        ]
+      : []),
     "",
     ref.body,
     BODY_END,
@@ -133,7 +160,7 @@ export function saveReference(packet: string, ref: Reference): string {
   return path;
 }
 
-export type StoredReference = { slug: string; title: string; source: string; date: string; kind: string; body: string };
+export type StoredReference = { slug: string; title: string; source: string; date: string; kind: string; body: string; status: string; expiration: string; owner: string; independent: number[]; claims: Map<number, string> };
 export function readReference(packet: string, slug: string): StoredReference | null {
   const path = join(referencesDir(packet), `${slug}.txt`);
   if (!existsSync(path)) return null;
@@ -141,7 +168,15 @@ export function readReference(packet: string, slug: string): StoredReference | n
   const head = (k: string) => text.match(new RegExp(`^${k}: (.*)$`, "m"))?.[1] ?? "";
   const start = text.indexOf("\n\n");
   const end = text.indexOf(BODY_END);
-  return { slug, title: head("Title"), source: head("Source"), date: head("Date"), kind: head("Kind"), body: text.slice(start < 0 ? 0 : start, end < 0 ? undefined : end) };
+  const body = text.slice(start < 0 ? 0 : start, end < 0 ? undefined : end);
+  const claims = new Map<number, string>();
+  const claimSection = body.slice(body.indexOf("\n## Claims"), body.indexOf("\n## Description") < 0 ? undefined : body.indexOf("\n## Description"));
+  for (const m of claimSection.matchAll(/### Claim (\d+) \((?:in)?dependent\)\n([\s\S]*?)(?=\n### Claim \d+ |$)/g)) claims.set(Number(m[1]), m[2].trim());
+  return {
+    slug, title: head("Title"), source: head("Source"), date: head("Date"), kind: head("Kind"), body,
+    status: head("Status"), expiration: head("Expiration"), owner: head("Owner"),
+    independent: [...head("Independent claims").matchAll(/\d+/g)].map((m) => Number(m[0])), claims,
+  };
 }
 export function listReferences(packet: string): string[] {
   const dir = referencesDir(packet);

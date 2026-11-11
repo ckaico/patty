@@ -1,8 +1,14 @@
 # patty-mcp
 
-Last updated: 2026-11-10 · version 0.2.0 · not published
+Last updated: 2026-11-10 · version 0.3.0 · not published
 
-A local MCP server for software inventions. It reads a repository with you and prepares two kinds of filing packet: a US provisional patent application and a US trademark application. You approve the packet, then sign, pay and submit in your own USPTO account. The server never signs, submits or pays.
+A local MCP server for software inventions. It reads a repository with you and does three jobs:
+
+- **Patent this repo.** Finds the mechanisms in the code, compares each with the closest prior art it can find, records whether each is worth protecting, and prepares a US provisional patent application.
+- **Build around a patent.** Charts every independent claim of someone else's patent against the code, element by element, and shows where a change would take an element out.
+- **Trademark.** Knockout check and the fields for a US trademark application.
+
+You approve what it prepares, then sign, pay and submit in your own USPTO account. The server never signs, submits or pays. It never says an invention is novel or patentable, or that code is clear of a patent.
 
 **Patty prepares documents for you to file yourself. It is not a law firm and this is not legal advice.**
 
@@ -16,6 +22,16 @@ The MCP host (Claude Code, Cursor, Codex) does the reading and the writing. The 
 4. The host writes `SPECIFICATION.md` around what the closest references lack, and calls `patty_figures` for the drawings.
 5. `patty_check` opens every cited line of code, looks for every chart quote in the stored reference text, compares every reference numeral, and fails the packet on placeholders and limiting language.
 6. `patty_build` writes the PDFs, the cover sheet worksheet, the docket and the filing steps. It will not run until the check passes.
+
+### Building around a patent
+
+1. `patty_start` with kind `clearance` returns that method and the repo map.
+2. `patty_prior_art` with `fetch` stores the patent: status, expiration, owner, and each claim marked independent or dependent.
+3. The host writes `CLAIM_CHART.md`: each independent claim split into elements in the claim's own words, each element marked found in the code (with `file:line`) or not found (with the reason), and options for taking an element out.
+4. `patty_check` compares the claim wording with the stored patent, opens every code citation, requires every independent claim to be charted, and requires the result to match the rows.
+5. `patty_build` writes `CLEARANCE_REPORT.md`.
+
+A product is covered by a claim only if it has every element of it. The chart shows which elements the code has. It is a literal reading, not a freedom-to-operate opinion.
 
 ## Install
 
@@ -35,17 +51,17 @@ Add `--scope user` to have it in every project. Any other MCP host takes the sam
 { "mcpServers": { "patty": { "command": "bun", "args": ["/absolute/path/to/patty-mcp/src/index.ts"] } } }
 ```
 
-Then, in any software repo, say "patent this repo", or run the `patent-this-repo` prompt (in Claude Code: `/mcp__patty__patent-this-repo`).
+Then, in any software repo, say "patent this repo" or "help me build around US1234567B2". The two prompts do the same: `patent-this-repo` and `build-around` (in Claude Code: `/mcp__patty__patent-this-repo`, `/mcp__patty__build-around`).
 
 ## Tools
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `patty_start` | `repo_path`, `kind` (`provisional` or `trademark`), `check_remotes` | Creates `patty-packet/` in the repo and adds it to `.gitignore` when the repo is under git. Returns the drafting method and a repo map: source files with sizes and languages, entry points, first and last commit dates, remotes and whether each answers an anonymous request, tags. |
+| `patty_start` | `repo_path`, `kind` (`provisional`, `clearance` or `trademark`), `check_remotes` | Creates `patty-packet/` in the repo and adds it to `.gitignore` when the repo is under git. Returns the drafting method and a repo map: source files with sizes and languages, entry points, first and last commit dates, remotes and whether each answers an anonymous request, tags. |
 | `patty_prior_art` | `queries[]`, `fetch[]`, `packet_path` | `queries`: searches patents (Google Patents), papers (arXiv) and repositories (GitHub) and adds titled, linked results to `PRIOR_ART.md`. `fetch`: reads references in full (publication numbers or URLs), stores them under `references/` and returns each patent's similar documents and citations. A failed search is written as "Search unavailable" and does not block the packet. |
 | `patty_figures` | `figures[]`, `packet_path` | Renders SVG drawings from JSON: `flow` (flowchart with decisions, side boxes, rejoin and loop-back arrows), `block` (boxes and data tables on a grid, arrows routed), `canvas` (exact coordinates). Black on white, reference numerals, one figure per file. Returns each figure's numerals and layout warnings. |
 | `patty_check` | `packet_path` | The lint. See below. |
-| `patty_build` | `packet_path`, optional `inventors`, `first_public_disclosure`, `nothing_public_yet`, `filed` | Runs the check, then writes `specification.pdf`, `drawings.pdf`, `COVER_SHEET.md`, `FILING_STEPS.md`, `DOCKET.md`. Facts not supplied are marked for the human; none are guessed. |
+| `patty_build` | `packet_path`, optional `inventors`, `first_public_disclosure`, `nothing_public_yet`, `filed` | Runs the check. For a clearance packet, writes `CLEARANCE_REPORT.md`. For a provisional packet, writes `specification.pdf`, `drawings.pdf`, `COVER_SHEET.md`, `FILING_STEPS.md`, `DOCKET.md`. Facts not supplied are marked for the human; none are guessed. |
 | `patty_tm_check` | `mark`, `goods_services`, `packet_path` | Trademark knockout: the USPTO register for the name as typed (through GleanMark, a third party), exact-name domain registrations and what they serve, same-name packages and accounts, Wikipedia. Writes `TM_KNOCKOUT.md` and `TM_FIELDS.md`. Does not search sound-alikes, similar marks or logos. |
 
 `packet_path` defaults to `patty-packet/` in the folder the server was started in.
@@ -67,6 +83,7 @@ patty-packet/
   DOCKET.md            first public disclosure, grace limit, twelve-month date
   STATUS.json          what is done, what is waiting on the human
   TM_KNOCKOUT.md, TM_FIELDS.md   trademark packet
+  CLAIM_CHART.md, CLEARANCE_REPORT.md   building around a patent
 ```
 
 The numbered steps end sign, submit, pay, in that order, because that is the order of Patent Center's screens: the fee is paid after the submission receipt.
@@ -98,7 +115,22 @@ Evidence: E1
 Result: closest US0000001A; differs in B
 ```
 
-The result line has three forms: `knocked out by <reference>` (one reference has every element), `closest <reference>; differs in B, C`, and `nothing close found`. There is no form that says a mechanism is new.
+The result line has three forms: `knocked out by <reference>` (one reference has every element), `closest <reference>; differs in B, C`, and `nothing close found`. There is no form that says a mechanism is new. Each mechanism also carries `Protect: yes | reason`, `maybe` or `no`: the host's call on whether it is worth the cost of protecting, weighing whether a real difference survives, whether a competitor would have to copy it, and whether copying could be seen from outside. A knocked-out mechanism has to be `no`.
+
+`CLAIM_CHART.md` looks like this. Elements are copied from the claim; a paraphrase fails.
+
+```
+## US0000009B2 claim 1
+- A. maintaining a data store that stores data for a plurality of tenants
+- B. storing an entry in an in-memory cache with an expiry time
+
+- A: no | one store for one user; nothing in src/ carries a tenant identifier
+- B: yes | src/cache.ts:19 | store.set(key, { value, expires: now + ttl, hits: 0 });
+
+Result: not found in the code: A
+```
+
+The result is `every element found in the code` or `not found in the code: A, D`. There is no form that says the code is clear.
 
 `SPECIFICATION.md` uses the headings Title, Field, Background, Summary, Brief Description of the Drawings, Detailed Description (with sections numbered `### 1. Name`), Example Claims, Abstract. Reference numerals are whole numbers from 100 up. The full contract, with the figure JSON, is the text in `src/method.ts`, which `patty_start` returns.
 
@@ -111,6 +143,8 @@ Fails the packet when:
 - a quote in the prior art chart is not in the stored reference, a charted reference was never fetched, or an element has no row;
 - the chart's result contradicts its rows: a reference marked yes for every element has to be reported as a knockout;
 - the search returned results and there is no chart;
+- a mechanism has no `Protect:` line, or a knocked-out one is not marked `no`;
+- in a claim chart: an element is not the claim's own words, an independent claim is not charted, a code citation does not verify, a "no" has no reason, or the result does not match the rows;
 - a reference numeral is in the Detailed Description and in no figure, or in a figure and never in the text;
 - the text refers to a figure that does not exist, or a figure has no line in the Brief Description of the Drawings;
 - a placeholder remains (`[CITY]`, `TODO`, `TBD`, `____`, `{{...}}`);
@@ -119,7 +153,7 @@ Fails the packet when:
 
 Warns, loudly, when a mechanism is knocked out; cutting or narrowing it is the human's decision. Warns when no search ran. Also warns on an abstract over 150 words, a title over 500 characters, text above the first heading, an inventor section in the specification, and missing claims or variations.
 
-What it does not do: it does not judge whether the specification says only what the evidence supports, whether the description is accurate, whether a quote really discloses the element it is set against, or whether anything is new, non-obvious or eligible. A "no" in the chart is the host model's reading of the reference and is not checked. Telling a quantity from a reference numeral is a heuristic: a number of 100 or more counts as a quantity when "for example", "about" or a similar word comes before it, or a unit such as "characters" or "ms" comes after it. "critical" also fails in "critical section"; reword.
+What it does not do: it does not judge whether the specification says only what the evidence supports, whether the description is accurate, whether a quote really discloses the element it is set against, or whether anything is new, non-obvious or eligible. A "no" in either chart is the host model's reading and is not checked; in a claim chart the whole result rests on it. `Protect` is a judgment, recorded so the human can disagree with it. Telling a quantity from a reference numeral is a heuristic: a number of 100 or more counts as a quantity when "for example", "about" or a similar word comes before it, or a unit such as "characters" or "ms" comes after it. "critical" also fails in "critical section"; reword.
 
 ## Network use
 
@@ -189,7 +223,7 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 
 ## Tested
 
-- `bun test`: 32 tests on a made-up cache repository, no network. Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
+- `bun test`: 40 tests on a made-up cache repository, no network. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear". Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
 - `bun run typecheck`: strict TypeScript.
 - Figure port: six existing figures (two hand-placed diagrams, four flowcharts) were re-expressed as figure JSON and rendered; each matched the original element for element. One deliberate difference: double-headed arrows now point outward at both ends.
 - The check was run against an existing hand-written provisional draft. It found one placeholder and six reference numerals that were in the figures and never in the text.
@@ -198,6 +232,7 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 - `patty_start` on a git repository with two remotes: the public one was reported public, the other not, and a token embedded in a remote URL did not appear in the output.
 - `patty_prior_art`: a live query returned titled, linked results; with the endpoint pointed at a closed port the file said "Search unavailable" and the tool did not fail.
 - End to end with search on (2026-11-10): a fresh session on a made-up 39-line cache repository searched in rounds, fetched ten references, and wrote a chart of three mechanisms against four references with 21 checked quotes. Each mechanism came back with a close reference and a narrow difference, and the session reported the differences as thin. Three follow-up fetches failed with HTTP 503 and GitHub search was rate-limited on four of eight queries; both now retry or say so.
+- Build-around, end to end (2026-11-10): a fresh session asked to build around a real, active cache-eviction patent on the made-up repository fetched it, charted all four independent claims (27 code citations), found no claim with every element in the code, singled out the one claim that was close and why, and listed three options with what each costs. 13 turns, about 2 minutes.
 - `patty_prior_art` fetch: a patent (87,000 characters, with 25 similar documents and its citations), an arXiv paper (abstract) and a GitHub repository (README) were each stored and listed.
 - `patty_tm_check` on "Argyle": reported two registered ARGYLE marks and one pending in software classes from the register, the existing company at argyle.com, and eight registered domains.
 
@@ -207,6 +242,7 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 - US provisional patent applications and US trademark applications. No non-provisional claim drafting, no design applications (a design cannot be filed as a provisional), no foreign filings.
 - No submission, signing or payment, by design. No hosted version, accounts or billing.
 - The prior art search is keyword search through an unofficial patent endpoint, arXiv and GitHub. Retrieval is the weak point: a reference the search never surfaces is never charted. It does not reach products, documentation, or code that is not on GitHub. Papers are stored as abstracts and repositories as READMEs.
+- The claim chart is a literal reading of the claims named, against this repo. It does not cover equivalents, other patents or pending applications of the same owner, or patents outside the US. Status and expiration come from Google Patents and are unverified. Design patents are not handled: their claim is the drawings.
 - The chart can show that something is not new. It cannot show that something is new, and it says nothing about obviousness or subject-matter eligibility.
 - The trademark knockout sees the register only through a third party's copy, and only for the name as typed.
 - Drawings are block diagrams, data tables and flowcharts. Fonts in the PDFs are Tinos and Arimo (SIL Open Font License 1.1, from the `@expo-google-fonts` packages).
@@ -236,6 +272,7 @@ src/figures.ts   patty_figures      src/check.ts     patty_check
 src/build.ts     patty_build        src/pdf.ts       PDF writers
 src/priorart.ts  patty_prior_art    src/tm.ts        patty_tm_check
 src/references.ts  reference fetching and storage    src/chart.ts  prior art chart rules
+src/claimchart.ts  claim chart rules (a patent against this repo)
 src/packet.ts    packet folder and STATUS.json
 ```
 

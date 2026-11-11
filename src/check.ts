@@ -4,8 +4,24 @@ import { figureFiles, numeralsOf, parseSvg } from "./figures.ts";
 import { now, readStatus, repoOf, writeStatus } from "./packet.ts";
 import { checkChart, CHART_FILE, type ChartOutcome } from "./chart.ts";
 import { readSearchLog } from "./priorart.ts";
+import { checkClaimChart, CLAIM_CHART_FILE, type ClaimChartCheck, type ClaimOutcome, type PatentSummary } from "./claimchart.ts";
 
-export type CheckResult = { passed: boolean; errors: string[]; warnings: string[]; report: string; outcomes: ChartOutcome[]; chartPresent: boolean };
+export type CheckResult = {
+  passed: boolean; errors: string[]; warnings: string[]; report: string; outcomes: ChartOutcome[]; chartPresent: boolean;
+  claimOutcomes: ClaimOutcome[]; patents: PatentSummary[]; claimChartPresent: boolean;
+};
+
+const CLAIM_CAVEAT =
+  "What the claim chart is: a literal reading of the independent claims of the patents named, against this repo as it is today. What it is not: a freedom-to-operate opinion. It does not cover equivalents (a court can treat a close substitute for an element as the element), other patents or pending applications of the same owner, patents nobody named, or code outside this repo. A \"no\" is the host model's reading and is not checked. Before shipping or selling something built around a live patent, have a patent attorney review it.";
+
+function claimLines(c: ClaimChartCheck): string[] {
+  const L: string[] = [];
+  for (const p of c.patents) {
+    L.push(`  ${p.slug} · ${p.title} · owner ${p.owner || "not listed"} · status ${p.status || "not listed"} · expiration ${p.expiration || "not listed"} · independent claims ${p.independent.join(", ") || "not identified"}`);
+    for (const o of c.outcomes.filter((x) => x.slug === p.slug)) L.push(`    - claim ${o.claim}: ${o.verdict}`);
+  }
+  return L;
+}
 
 // ---------- specification ----------
 export type Spec = {
@@ -160,8 +176,8 @@ export function parseEvidence(text: string): EvidenceEntry[] {
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
-function checkCitation(repo: string, packet: string, c: Citation, cache: Map<string, string[] | null>): string | null {
-  const where = `EVIDENCE.md line ${c.lineNo} (${c.path}:${c.start}${c.end !== c.start ? "-" + c.end : ""})`;
+function checkCitation(repo: string, packet: string, c: Citation, cache: Map<string, string[] | null>, label?: string): string | null {
+  const where = `${label ?? `EVIDENCE.md line ${c.lineNo}`} (${c.path}:${c.start}${c.end !== c.start ? "-" + c.end : ""})`;
   const abs = resolve(repo, c.path);
   if (abs !== repo && !abs.startsWith(repo + sep)) return `${where}: the path leaves the repo.`;
   if (abs.startsWith(packet + sep)) return `${where}: cites the packet itself; cite source code.`;
@@ -197,6 +213,31 @@ export function check(packetPath: string, record = true): CheckResult {
   const repo = repoOf(packet);
   const errors: string[] = [];
   const warnings: string[] = [];
+  const citeCache = new Map<string, string[] | null>();
+  const cite = (path: string, start: number, end: number, text: string, where: string) => checkCitation(repo, packet, { path, start, end, text, lineNo: 0 }, citeCache, where);
+  const kind = readStatus(packet)?.kind ?? "provisional";
+
+  // A clearance packet holds only someone else's patent charted against this repo.
+  if (kind === "clearance") {
+    const cc = checkClaimChart(packet, cite, true);
+    const passed = cc.errors.length === 0;
+    const R = [passed ? "patty_check: PASS" : `patty_check: FAIL (${cc.errors.length} error${cc.errors.length === 1 ? "" : "s"})`, `Packet: ${packet}`, `Repo the citations were checked against: ${repo}`];
+    if (cc.present) R.push(`Claim chart: ${cc.outcomes.length} claim${cc.outcomes.length === 1 ? "" : "s"} of ${cc.patents.length} patent${cc.patents.length === 1 ? "" : "s"}; claim wording checked against the stored patents; ${cc.citations} code citation${cc.citations === 1 ? "" : "s"} opened and compared.`, ...claimLines(cc));
+    if (cc.errors.length) R.push("", "Errors (each one blocks patty_build):", ...cc.errors.map((e) => `- ${e}`));
+    if (cc.warnings.length) R.push("", "Warnings (do not block):", ...cc.warnings.map((w) => `- ${w}`));
+    if (passed) R.push("", CLAIM_CAVEAT);
+    if (record) {
+      const st = readStatus(packet);
+      if (st) {
+        st.check = { passed, at: now(), errors: cc.errors.length, warnings: cc.warnings.length };
+        if (passed) st.done.check = now();
+        else delete st.done.check;
+        writeStatus(packet, st);
+      }
+    }
+    return { passed, errors: cc.errors, warnings: cc.warnings, report: R.join("\n"), outcomes: [], chartPresent: false, claimOutcomes: cc.outcomes, patents: cc.patents, claimChartPresent: cc.present };
+  }
+
   const specPath = join(packet, "SPECIFICATION.md"), evPath = join(packet, "EVIDENCE.md");
   const figs = figureFiles(packet);
 
@@ -293,6 +334,11 @@ export function check(packetPath: string, record = true): CheckResult {
   errors.push(...chart.errors);
   warnings.push(...chart.warnings);
 
+  // someone else's patent against this repo, when one was charted
+  const cc = checkClaimChart(packet, cite, false);
+  errors.push(...cc.errors);
+  warnings.push(...cc.warnings);
+
   // figures and numerals
   const figNumerals = new Map<number, Set<number>>();
   const figNumbers = figs.map((f) => f.number);
@@ -340,8 +386,9 @@ export function check(packetPath: string, record = true): CheckResult {
   R.push(`Figures: ${figs.length}${figs.length ? " (" + figs.map((f) => `FIG. ${f.number}`).join(", ") + ")" : ""}.`);
   if (chart.present) {
     R.push(`Prior art chart: ${chart.mechanisms} mechanism${chart.mechanisms === 1 ? "" : "s"} compared with ${chart.references} reference${chart.references === 1 ? "" : "s"}; ${chart.quotes} quote${chart.quotes === 1 ? "" : "s"} found in the stored reference text.`);
-    for (const o of chart.outcomes) R.push(`  - ${o.name}: ${o.verdict}${o.ref ? ` [${o.ref}${o.refDate ? `, ${o.refDate}` : ""}]` : ""}`);
+    for (const o of chart.outcomes) R.push(`  - ${o.name}: ${o.verdict}${o.ref ? ` [${o.ref}${o.refDate ? `, ${o.refDate}` : ""}]` : ""}${o.protect ? `\n      worth protecting? ${o.protect}` : ""}`);
   } else R.push(`Prior art chart: none.`);
+  if (cc.present) R.push(`Claim chart: ${cc.outcomes.length} claim${cc.outcomes.length === 1 ? "" : "s"} of ${cc.patents.length} patent${cc.patents.length === 1 ? "" : "s"} charted against the code.`, ...claimLines(cc));
   if (errors.length) R.push("", "Errors (each one blocks patty_build):", ...errors.map((e) => `- ${e}`));
   if (warnings.length) R.push("", "Warnings (do not block):", ...warnings.map((w) => `- ${w}`));
   if (passed) R.push("", "What this check does not do: it confirms each citation exists and each numeral matches. It confirms each quote in the prior art chart is in the reference it is attributed to. It does not judge whether the specification says only what the evidence supports, whether a quote really discloses the element it is set against, or whether the invention is new or patentable. A search that finds nothing is not a clearance. A person has to read it.");
@@ -355,5 +402,6 @@ export function check(packetPath: string, record = true): CheckResult {
       writeStatus(packet, s);
     }
   }
-  return { passed, errors, warnings, report: R.join("\n"), outcomes: chart.outcomes, chartPresent: chart.present };
+  if (passed && cc.present) R.push("", CLAIM_CAVEAT);
+  return { passed, errors, warnings, report: R.join("\n"), outcomes: chart.outcomes, chartPresent: chart.present, claimOutcomes: cc.outcomes, patents: cc.patents, claimChartPresent: cc.present };
 }

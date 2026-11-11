@@ -99,6 +99,7 @@ Evidence: E1
 - C: no
 
 Result: closest US10013501B2; differs in B, C
+Protect: yes | a competitor matching this feature would have to do B, and B shows in the product's behaviour
 \`\`\`
 - Break each mechanism into 2 to 6 elements. An element is one thing the code does that a
   reference either has or lacks.
@@ -112,6 +113,15 @@ Result: closest US10013501B2; differs in B, C
   "Result: knocked out by <reference>" when one reference has every element;
   "Result: closest <reference>; differs in B, C";
   "Result: nothing close found".
+- Protect is your call on whether the mechanism is worth the cost of protecting: "yes",
+  "maybe" or "no", then the reason. Weigh four things. Does a real difference survive
+  the chart, or is it a small variation? Would a competitor have to copy this to match
+  the product? Could the owner tell from outside that someone had copied it (if not, a
+  trade secret may serve better than a patent)? Is it likely to stay in the product? A
+  knocked-out mechanism is "no". The human can overrule it; say what you weighed.
+- If the closest reference is a patent that is still in force and the code does what
+  its claims say, tell the human, and offer to chart its claims against the code (the
+  build-around workflow: patty_start with kind "clearance").
 - Chart every evidence entry. Never write that a mechanism is novel or patentable. The
   chart says what was found and how it differs; a search that finds nothing is not a
   clearance.
@@ -194,6 +204,76 @@ If they have not answered, leave those fields out. patty_build marks them for th
 on the cover sheet. Never fill them from a guess, from git config or from a README.
 `;
 
+export const CLEARANCE_METHOD = `# Patty: building around someone else's patent
+
+${DISCLAIMER}
+
+The human has named one or more patents. Your job is to show, claim by claim, what this
+repo does and does not do of what each patent claims, and where a change would take a
+whole element out. You never write that the code is clear, safe or non-infringing. You
+write what was found, element by element, and what was not checked.
+
+How a claim works: a product is covered by a claim only if it has every element of that
+claim. Take one whole element out and that claim is not literally met. Dependent claims
+add elements to an independent claim, so a product that avoids an independent claim
+avoids its dependents. Every independent claim has to be avoided separately.
+
+## Order of work
+Pass packet_path (the packet folder reported at the top of this message) to every Patty tool.
+1. Call patty_prior_art with fetch: the publication numbers the human named. Each stored
+   file starts with the patent's status, expiration, owner and its independent claims.
+2. Tell the human at once if a patent is listed as expired, abandoned or only a pending
+   application, or is not a US patent. Status comes from Google Patents and is
+   unverified; the human confirms it at the USPTO.
+3. Read the claims in references/, then the description for how the patent uses each
+   term. Read the repo code that does the same job.
+4. Write patty-packet/CLAIM_CHART.md (format below), one section per independent claim.
+5. Call patty_check. Fix every error and call it again until it passes.
+6. For each claim where every element was found, or where the only "no" is thin, write
+   options under a "## Options" heading in CLAIM_CHART.md: for each, which element it
+   removes, what the code would do instead, and what the product loses. Prefer removing
+   an element outright over swapping in a close substitute: a court can treat a close
+   substitute as the element. A better design that does not need the element at all is
+   the strongest answer.
+7. Call patty_build. It writes CLEARANCE_REPORT.md for the human.
+8. Tell the human, per patent and per claim: every element found, or which elements were
+   not found and why; the options; and what was not checked. Stop there.
+If the human then changes the code, run steps 3 to 7 again: the chart is of the code as
+it is, and citations are re-checked every time.
+If the human is designing something new and there is no code yet, chart the planned
+design: mark an element "no" with the design decision that avoids it, and say plainly
+that the chart describes a plan, not code.
+
+## CLAIM_CHART.md format (patty_check parses this)
+\`\`\`
+# Claim chart
+
+## US10013501B2 claim 1
+- A. maintaining, by a computing system, a multi-tenant data store that stores data for a plurality of tenants
+- B. maintaining, by the computing system, an in-memory cache for the multi-tenant data store
+- C. receiving, by the computing system, a store request to store data in an entry of the in-memory cache
+
+- A: no | there is one store for one user; nothing in src/ carries a tenant identifier
+- B: partly | src/cache.ts:4 | const store = new Map<string, Entry>();
+- C: yes | src/cache.ts:18 | export function put(key: string, value: string, now: number, ttl: number) {
+
+Result: not found in the code: A
+
+## Options
+Free text: what could change, which element it removes, what it costs.
+\`\`\`
+- One section per independent claim, headed "## <publication number> claim <n>".
+- Elements are the claim's own words, copied from the stored patent; patty_check fails a
+  paraphrase. Split the whole claim, preamble included; leave nothing out.
+- Every element gets a row: "yes | path:line | code text" or "partly | path:line | code
+  text" when the code does it, "no | reason" when it does not. Citations are opened and
+  compared, like EVIDENCE.md. When unsure between partly and no, write partly.
+- Result is one of exactly two forms: "Result: every element found in the code", or
+  "Result: not found in the code: A, D" naming every element marked no. A partly counts
+  as found.
+- Read each term the way the patent's description uses it, not the narrowest way.
+`;
+
 export const TRADEMARK_METHOD = `# Patty: method for a US trademark application packet
 
 ${DISCLAIMER}
@@ -208,6 +288,16 @@ ${DISCLAIMER}
    wording, specimen. Fill in only what they tell you.
 4. The human files in their own USPTO account. They sign, pay and submit. You never do.
 `;
+
+export const PROMPT_BUILD_AROUND = (patents: string, repo: string) => `Help me build around ${patents || "a patent"} with Patty${repo ? ` (repo: ${repo})` : ""}.
+
+1. patty_start with kind "clearance". Read the method it returns and follow it.
+2. patty_prior_art with fetch: the patent numbers. Tell me each one's status, expiration and owner first.
+3. Chart every independent claim against my code in patty-packet/CLAIM_CHART.md.
+4. patty_check until it passes, then patty_build.
+
+Then tell me, claim by claim, which elements my code has and which it does not, the options for
+taking a whole element out, and what you did not check. Do not tell me I am clear or safe.`;
 
 export const PROMPT_PATENT_THIS_REPO = (repo: string) => `Patent this repo with Patty${repo ? ` (repo: ${repo})` : ""}.
 

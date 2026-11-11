@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { join } from "node:path";
 import { DISCLAIMER, PACKET_DIR, VERSION, markDone, requirePacket } from "./packet.ts";
-import { PROMPT_PATENT_THIS_REPO } from "./method.ts";
+import { PROMPT_BUILD_AROUND, PROMPT_PATENT_THIS_REPO } from "./method.ts";
 import { start } from "./start.ts";
 import { writeFigures } from "./figures.ts";
 import { check } from "./check.ts";
@@ -19,7 +19,7 @@ const server = new McpServer(
       `Patty prepares a US provisional patent packet, or a US trademark packet, from a software repository. ` +
       `When the user asks to patent a repo, a codebase or "this", call patty_start with kind "provisional" first and follow the method it returns: ` +
       `read the code, write EVIDENCE.md, search and chart prior art with patty_prior_art, write SPECIFICATION.md, then patty_figures, patty_check and patty_build. Never tell the user an invention is novel or patentable; report what the search found and how it differs. ` +
-      `For a trademark, call patty_tm_check. The human approves the packet, then signs, pays and submits in their own USPTO account. ` +
+      `When the user wants to build around, avoid or check their code against someone else's patent, call patty_start with kind "clearance" and follow that method: fetch the patent, chart every independent claim against the code in CLAIM_CHART.md, patty_check, patty_build. Never tell the user their code is clear, safe or non-infringing; report which claim elements were and were not found. For a trademark, call patty_tm_check. The human approves the packet, then signs, pays and submits in their own USPTO account. ` +
       `Never sign, submit, pay or operate a USPTO account for them. ${DISCLAIMER}`,
   },
 );
@@ -33,10 +33,10 @@ server.registerTool(
   {
     title: "Start a Patty packet",
     description:
-      "First step. Creates patty-packet/ in the repo and returns the drafting method plus a repo map: source files with sizes and languages, entry points, git first and last commit dates, remotes and whether each is public, and tags. Call this before reading the code.",
+      "First step for every job: patenting this repo (kind provisional), building around or checking the repo against someone else's patent (kind clearance), or a trademark (kind trademark). Creates patty-packet/ in the repo and returns the method for that job plus a repo map: source files with sizes and languages, entry points, git first and last commit dates, remotes and whether each is public, and tags. Call this before reading the code.",
     inputSchema: {
       repo_path: z.string().describe("Absolute path of the repository root."),
-      kind: z.enum(["provisional", "trademark"]).default("provisional").describe("provisional: US provisional patent application. trademark: US trademark application."),
+      kind: z.enum(["provisional", "clearance", "trademark"]).default("provisional").describe("provisional: draft a US provisional patent application from this repo and find what in it is worth protecting. clearance: chart someone else's patent against this repo, to build around it. trademark: US trademark application."),
       check_remotes: z.boolean().default(true).describe("Ask each git remote, anonymously, whether it is public. Sends no source code."),
     },
   },
@@ -121,7 +121,7 @@ server.registerTool(
   {
     title: "Build the filing copies",
     description:
-      "Writes specification.pdf and drawings.pdf (clean filing copies), COVER_SHEET.md, FILING_STEPS.md and DOCKET.md. Runs patty_check first and refuses if it fails. Pass only facts the human has told you; anything left out is marked for the human to enter. Files nothing: the human signs, submits and pays.",
+      "For a provisional packet: writes specification.pdf and drawings.pdf (clean filing copies), COVER_SHEET.md, FILING_STEPS.md and DOCKET.md. For a clearance packet: writes CLEARANCE_REPORT.md. Runs patty_check first and refuses if it fails. Pass only facts the human has told you; anything left out is marked for the human to enter. Files nothing: the human signs, submits and pays.",
     inputSchema: {
       packet_path: packetArg,
       inventors: z.array(z.object({ name: z.string().describe("Legal name, as the human gave it."), residence: z.string().default("").describe("City and state, or city and country.") })).optional().describe("Only as told by the human. Never from git config or a guess."),
@@ -170,6 +170,18 @@ server.registerPrompt(
   },
   ({ repo_path }) => ({
     messages: [{ role: "user", content: { type: "text", text: PROMPT_PATENT_THIS_REPO(repo_path ?? "") } }],
+  }),
+);
+
+server.registerPrompt(
+  "build-around",
+  {
+    title: "Build around a patent",
+    description: "Charts every independent claim of someone else's patent against this repo and lists what could change to take an element out.",
+    argsSchema: { patents: z.string().describe("Publication numbers, e.g. US10013501B2"), repo_path: z.string().optional().describe("Repository root. Defaults to the current folder.") },
+  },
+  ({ patents, repo_path }) => ({
+    messages: [{ role: "user", content: { type: "text", text: PROMPT_BUILD_AROUND(patents, repo_path ?? "") } }],
   }),
 );
 

@@ -261,6 +261,7 @@ Evidence: E1
 - C: partly | deleting the least recently used entry when the cache is full
 
 Result: closest US0000001A; differs in B, C
+Protect: yes | a competitor matching the eviction behaviour would need B, and B shows in what gets evicted
 
 ## M2. Store and lookup
 Evidence: E2
@@ -268,6 +269,7 @@ Evidence: E2
 - B. A lookup of an expired entry deletes it.
 
 Result: nothing close found
+Protect: maybe | common practice in caches; hard to tell from outside whether a product does it
 `;
   const withChart = (chart: string | null, fn: (r: ReturnType<typeof check>) => void, log?: unknown) => {
     mkdirSync(join(packet, "references"), { recursive: true });
@@ -299,13 +301,17 @@ Result: nothing close found
   test("every element yes means knocked out, whatever the result line says", () =>
     withChart(CHART.replace("- B: no", "- B: yes | deleting the least recently used entry when the cache is full").replace("- C: partly", "- C: yes"), (r) => expect(r.errors.join("\n")).toMatch(/has to be "knocked out by US0000001A"/)));
   test("a knockout is reported loudly but is the human's call", () =>
-    withChart(CHART.replace("- B: no", "- B: yes | deleting the least recently used entry when the cache is full").replace("- C: partly", "- C: yes").replace("Result: closest US0000001A; differs in B, C", "Result: knocked out by US0000001A"), (r) => {
+    withChart(CHART.replace("- B: no", "- B: yes | deleting the least recently used entry when the cache is full").replace("- C: partly", "- C: yes").replace("Result: closest US0000001A; differs in B, C", "Result: knocked out by US0000001A").replace("Protect: yes |", "Protect: no |"), (r) => {
       expect(r.errors).toEqual([]);
       expect(r.warnings.join("\n")).toMatch(/knocked out by US0000001A/);
     }));
   test("a missing row and a made-up result form fail", () => {
     withChart(CHART.replace("- B: no\n", ""), (r) => expect(r.errors.join("\n")).toMatch(/no row for element B/));
     withChart(CHART.replace("Result: nothing close found", "Result: novel"), (r) => expect(r.errors.join("\n")).toMatch(/not one of the three forms/));
+  });
+  test("a knocked-out mechanism cannot be marked worth protecting, and the call is required", () => {
+    withChart(CHART.replace("- B: no", "- B: yes | deleting the least recently used entry when the cache is full").replace("- C: partly", "- C: yes").replace("Result: closest US0000001A; differs in B, C", "Result: knocked out by US0000001A"), (r) => expect(r.errors.join("\n")).toMatch(/Protect has to be "no"/));
+    withChart(CHART.replace(/Protect: maybe.*\n/, ""), (r) => expect(r.errors.join("\n")).toMatch(/no "Protect:" line/));
   });
   test("search results with no chart block the build; no search only warns", () => {
     const hit = [{ query: "q", at: "2026-01-01", hits: [{ title: "t", number: "US0000001A", link: "x" }], papers: [], code: [] }];
@@ -314,6 +320,112 @@ Result: nothing close found
       expect(r.errors).toEqual([]);
       expect(r.warnings.join("\n")).toMatch(/No prior art search was run/);
     });
+  });
+});
+
+describe("building around a patent", () => {
+  const PATENT = `Reference: US0000009B2
+Title: Tenant cache
+Kind: patent
+Source: https://example.invalid/US0000009B2
+Date: 2015-01-01 (priority date, as the source lists it)
+Fetched: 2026-01-01
+Status: Active (as Google Patents lists it; confirm in USPTO Patent Center before relying on it)
+Expiration: 2036-05-01
+Owner: Example Corp
+Independent claims: 1, 3
+
+## Abstract
+A cache for several tenants.
+
+## Claims
+### Claim 1 (independent)
+1. A method, comprising: maintaining a data store that stores data for a plurality of tenants; storing an entry in an in-memory cache with an expiry time; and deleting the entry on a read after the expiry time.
+
+### Claim 2 (dependent)
+2. The method of claim 1, wherein the cache is a map.
+
+### Claim 3 (independent)
+3. A system comprising a processor configured to count hits for each entry in an in-memory cache and delete the entry having the fewest hits when the cache is full.
+
+## Description
+Text.
+
+## Related documents
+`;
+  const CLAIMS = `# Claim chart
+
+## US0000009B2 claim 1
+- A. maintaining a data store that stores data for a plurality of tenants
+- B. storing an entry in an in-memory cache with an expiry time
+- C. deleting the entry on a read after the expiry time
+
+- A: no | one store for one user; nothing in src/ carries a tenant identifier
+- B: yes | src/cache.ts:19 | store.set(key, { value, expires: now + ttl, hits: 0 });
+- C: yes | src/cache.ts:9-10 | store.delete(key);
+
+Result: not found in the code: A
+
+## US0000009B2 claim 3
+- A. a processor configured to count hits for each entry in an in-memory cache
+- B. delete the entry having the fewest hits when the cache is full
+
+- A: yes | src/cache.ts:13 | entry.hits++;
+- B: yes | src/cache.ts:27 | if (e.hits < least) { least = e.hits; worst = k; }
+
+Result: every element found in the code
+
+## Options
+Drop the hit counter and evict the oldest entry instead; that removes claim 3 element A.
+`;
+  let crepo: string, cpacket: string;
+  const run = async (chart: string, fn: (r: ReturnType<typeof check>) => void) => {
+    writeFileSync(join(cpacket, "CLAIM_CHART.md"), chart);
+    fn(check(cpacket, false));
+  };
+  beforeAll(async () => {
+    crepo = mkdtempSync(join(tmpdir(), "patty-around-"));
+    mkdirSync(join(crepo, "src"));
+    writeFileSync(join(crepo, "src", "cache.ts"), CACHE_TS);
+    const out = await start(crepo, "clearance", false);
+    expect(out).toContain("building around someone else's patent");
+    cpacket = join(crepo, "patty-packet");
+    mkdirSync(join(cpacket, "references"), { recursive: true });
+    writeFileSync(join(cpacket, "references", "US0000009B2.txt"), PATENT);
+  });
+  afterAll(() => rmSync(crepo, { recursive: true, force: true }));
+
+  test("a chart in the claim's words with real citations passes, and says which claim reads on the code", () =>
+    run(CLAIMS, (r) => {
+      expect(r.errors).toEqual([]);
+      expect(r.claimOutcomes.map((o) => [o.claim, o.allFound])).toEqual([[1, false], [3, true]]);
+      expect(r.warnings.join("\n")).toMatch(/claim 3: every element of the claim was found/);
+      expect(r.report).toContain("status Active");
+      expect(r.report).toContain("What it is not: a freedom-to-operate opinion");
+      expect(r.report).not.toMatch(/\bis clear\b|does not infringe|non-infringing|safe to/i);
+    }));
+  test("a paraphrased claim element fails", () => run(CLAIMS.replace("- A. maintaining a data store that stores data for a plurality of tenants", "- A. keeping a multi-user database"), (r) => expect(r.errors.join("\n")).toMatch(/not the claim's own words/)));
+  test("an uncharted independent claim fails", () => run(CLAIMS.slice(0, CLAIMS.indexOf("## US0000009B2 claim 3")), (r) => expect(r.errors.join("\n")).toMatch(/claim 3 is independent and is not charted/)));
+  test("a code citation that is not on the line fails", () => run(CLAIMS.replace("src/cache.ts:13 |", "src/cache.ts:14 |"), (r) => expect(r.errors.join("\n")).toMatch(/not on that line/)));
+  test("the result has to match the rows", () => {
+    run(CLAIMS.replace("Result: not found in the code: A", "Result: every element found in the code"), (r) => expect(r.errors.join("\n")).toMatch(/has to be "not found in the code: A"/));
+    run(CLAIMS.replace("Result: every element found in the code", "Result: not found in the code: B"), (r) => expect(r.errors.join("\n")).toMatch(/has to be "every element found in the code"/));
+    run(CLAIMS.replace("Result: every element found in the code", "Result: clear"), (r) => expect(r.errors.join("\n")).toMatch(/not one of the two forms/));
+  });
+  test("a no needs a reason, and a patent that was never fetched cannot be charted", () => {
+    run(CLAIMS.replace("- A: no | one store for one user; nothing in src/ carries a tenant identifier", "- A: no"), (r) => expect(r.errors.join("\n")).toMatch(/a "no" needs the reason/));
+    run(CLAIMS.replace(/US0000009B2/g, "US0000010B2"), (r) => expect(r.errors.join("\n")).toMatch(/is not a stored patent/));
+  });
+  test("the build writes a report that never says clear", async () => {
+    writeFileSync(join(cpacket, "CLAIM_CHART.md"), CLAIMS);
+    const out = await build(cpacket, {});
+    expect(out).toStartWith("patty_build: CLEARANCE_REPORT.md written.");
+    const rep = readFileSync(join(cpacket, "CLEARANCE_REPORT.md"), "utf8");
+    expect(rep).toContain("Claim 3: EVERY ELEMENT FOUND in the code");
+    expect(rep).toContain("Claim 1: not found in the code: A");
+    expect(rep).toContain("This is not a freedom-to-operate opinion");
+    expect(rep).toContain("It is not a law firm and this is not legal advice.");
+    expect(existsSync(join(cpacket, "specification.pdf"))).toBe(false);
   });
 });
 

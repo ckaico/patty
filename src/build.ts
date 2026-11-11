@@ -49,6 +49,46 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
     return `patty_build refused: the packet does not pass patty_check. Fix these and run it again.\n\n${result.report}`;
   }
   const status = readStatus(packet);
+  if (status?.kind === "clearance") {
+    const L: string[] = [
+      "# Clearance report",
+      "",
+      DISCLAIMER,
+      "",
+      `Written ${today()} from CLAIM_CHART.md, which compares each independent claim of the patents below with this repo as it stood that day. Every claim element in the chart is the claim's own wording, checked against the stored patent text, and every code citation was opened and compared.`,
+      "",
+      "**This is not a freedom-to-operate opinion, and nothing here says the code is clear.** Read \"What this does not cover\" before acting on it.",
+      "",
+    ];
+    for (const p of result.patents) {
+      L.push(`## ${p.slug}: ${p.title}`, "", `- Owner: ${p.owner || "not listed"}`, `- Status: ${p.status || "not listed"}`, `- Expiration: ${p.expiration || "not listed"}`, `- Independent claims: ${p.independent.join(", ") || "not identified"}`, `- Source: ${p.source}`, "");
+      for (const o of result.claimOutcomes.filter((x) => x.slug === p.slug)) L.push(`- Claim ${o.claim}: ${o.verdict}`);
+      L.push("");
+    }
+    const all = result.claimOutcomes.filter((o) => o.allFound);
+    L.push("## What to do with this", "");
+    if (all.length) L.push(`- ${all.map((o) => `${o.slug} claim ${o.claim}`).join(", ")}: every element was found in the code. Do not ship or sell on the strength of this file. Change the code so one whole element is gone (see Options in CLAIM_CHART.md), then run the chart again; or take it to a patent attorney.`);
+    L.push(
+      "- Where an element was not found: read that row in CLAIM_CHART.md and decide whether you agree. The \"no\" is a reading, not a checked fact, and the whole result rests on it.",
+      "- Confirm each patent's status and expiration in USPTO Patent Center. The values above come from Google Patents.",
+      "- If the code changes, run the chart again. It describes the code on the day it was written.",
+      "",
+      "## What this does not cover",
+      "",
+      "- Equivalents. A court can treat a close substitute for a claim element as that element. Removing an element outright is safer than swapping in something similar.",
+      "- Other patents. Only the patents named were charted. The same owner may hold others, and a pending application in the same family can still issue with different claims.",
+      "- Code outside this repo, and anything the product does that the code here does not show.",
+      "- Patents outside the United States.",
+      "- Whether the patent is valid. PRIOR_ART.md and a prior art chart can bear on that; this report does not.",
+      "- A patent attorney's judgment. Before shipping or selling something built around a live patent, get it.",
+      "",
+    );
+    writeFileSync(join(packet, "CLEARANCE_REPORT.md"), L.join("\n"));
+    status.done.build = now();
+    status.waiting_on_human = ["Read CLEARANCE_REPORT.md and CLAIM_CHART.md.", "Confirm each patent's status at the USPTO.", "Decide what to change; have a patent attorney review before shipping or selling."];
+    writeStatus(packet, status);
+    return ["patty_build: CLEARANCE_REPORT.md written.", `Packet: ${packet}`, "", ...result.patents.flatMap((p) => [`${p.slug} · status ${p.status || "not listed"} · expiration ${p.expiration || "not listed"} · owner ${p.owner || "not listed"}`, ...result.claimOutcomes.filter((o) => o.slug === p.slug).map((o) => `  claim ${o.claim}: ${o.verdict}`)]), "", "Report these to the human claim by claim, with the options and what was not checked. Do not say the code is clear, safe or non-infringing."].join("\n");
+  }
   const facts: BuildFacts = { ...((status?.facts as BuildFacts) ?? {}) };
   if (given.inventors?.length) facts.inventors = given.inventors;
   if (given.first_public_disclosure) {
@@ -166,7 +206,7 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
     ...(result.chartPresent
       ? [
           "3. Read PRIOR_ART_CHART.md, then PRIOR_ART.md. The chart compares each mechanism with the closest references found, element by element; every quote in it was checked against the reference text. What it concluded:",
-          ...result.outcomes.map((o) => `   - ${o.name}: ${o.verdict}${o.ref ? ` (${o.ref}${o.refTitle ? `, "${o.refTitle}"` : ""}${o.refDate ? `, ${o.refDate}` : ""})` : ""}`),
+          ...result.outcomes.flatMap((o) => [`   - ${o.name}: ${o.verdict}${o.ref ? ` (${o.ref}${o.refTitle ? `, "${o.refTitle}"` : ""}${o.refDate ? `, ${o.refDate}` : ""})` : ""}`, ...(o.protect ? [`     Worth protecting? ${o.protect}`] : [])]),
           "   Open the closest reference for the mechanism you care most about and read it yourself. This is a keyword search plus a comparison, not a patentability opinion: it cannot see products, documentation or code that are not indexed, and it does not judge obviousness or subject-matter eligibility. A registered patent practitioner can.",
         ]
       : ["3. Read PRIOR_ART.md. No comparison with prior art was made for this packet, so nothing here says whether the mechanisms are new. Run the searches linked in that file before you file."]),
@@ -219,7 +259,7 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
     `- drawings.pdf: ${dr.sheets} sheets`,
     "- COVER_SHEET.md, DOCKET.md, FILING_STEPS.md",
   ];
-  if (result.chartPresent) out.push("", "Prior art chart:", ...result.outcomes.map((o) => `- ${o.name}: ${o.verdict}${o.ref ? ` [${o.ref}]` : ""}`));
+  if (result.chartPresent) out.push("", "Prior art chart:", ...result.outcomes.map((o) => `- ${o.name}: ${o.verdict}${o.ref ? ` [${o.ref}]` : ""}${o.protect ? ` · worth protecting? ${o.protect}` : ""}`));
   else out.push("", "No prior art chart: nothing in this packet says whether the mechanisms are new. Say so to the human.");
   const unknown: string[] = [];
   if (!inv.length) unknown.push("inventor names and residences");
