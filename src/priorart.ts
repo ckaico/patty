@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DISCLAIMER, markDone } from "./packet.ts";
-import { fetchReference, htmlToText, listReferences, readReference, referencesDir, saveReference, type Reference } from "./references.ts";
+import { fetchReference, htmlToText, listReferences, pace, readReference, referencesDir, saveReference, type Reference } from "./references.ts";
 
 // Patents: Google Patents' own query endpoint. It is not a documented API and can change or
 // refuse requests at any time, so every failure is written into the file and never thrown.
@@ -29,7 +29,15 @@ async function searchPatents(query: string): Promise<{ total?: number; hits: Hit
   if (offline()) return { hits: [], error: "PATTY_OFFLINE=1 is set" };
   const inner = `q=${encodeURIComponent(query)}&oq=${encodeURIComponent(query)}`;
   try {
-    const r = await fetch(`${ENDPOINT}?url=${encodeURIComponent(inner)}&exp=`, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": UA, Accept: "application/json" } });
+    const url = `${ENDPOINT}?url=${encodeURIComponent(inner)}&exp=`;
+    let r!: Response;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await pace(url);
+      r = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": UA, Accept: "application/json" } });
+      if (r.ok || ![429, 503].includes(r.status)) break;
+      await new Promise((res) => setTimeout(res, 8000));
+    }
+    if (r.status === 429 || r.status === 503) return { hits: [], error: `the search service is refusing requests for now (HTTP ${r.status}); wait a few minutes and run this query again` };
     if (!r.ok) return { hits: [], error: `the search service answered HTTP ${r.status}` };
     const results = ((await r.json()) as any)?.results;
     const rows: any[] = (results?.cluster ?? []).flatMap((c: any) => c?.result ?? []);
@@ -59,10 +67,12 @@ async function searchPapers(query: string): Promise<{ papers: Other[]; papersErr
   if (process.env.PATTY_PATENT_SEARCH_URL) return { papers: [], papersError: "skipped" };
   try {
     let xml = "";
-    // Fewer words on each try, until something matches.
-    for (const n of [6, 4, 3]) {
-      const q = keywords(query, n).map((w) => `all:${w}`).join(" AND ");
-      const r = await fetch(`https://export.arxiv.org/api/query?search_query=${encodeURIComponent(q)}&max_results=5&sortBy=relevance`, { signal: AbortSignal.timeout(20000), headers: { "User-Agent": UA } });
+    // Fewer words on the second try, if the first matched nothing.
+    for (const n of [5, 3]) {
+      const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(keywords(query, n).map((w) => `all:${w}`).join(" AND "))}&max_results=5&sortBy=relevance`;
+      await pace(url);
+      const r = await fetch(url, { signal: AbortSignal.timeout(20000), headers: { "User-Agent": UA } });
+      if (r.status === 429) return { papers: [], papersError: "arXiv is rate-limiting; run this query again in a minute" };
       if (!r.ok) return { papers: [], papersError: `arXiv answered HTTP ${r.status}` };
       xml = await r.text();
       if (xml.includes("<entry>")) break;
@@ -82,7 +92,9 @@ async function searchCode(query: string): Promise<{ code: Other[]; codeError?: s
   if (process.env.PATTY_PATENT_SEARCH_URL) return { code: [], codeError: "skipped" };
   try {
     // One request per query: unauthenticated GitHub search allows about ten a minute.
-    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(keywords(query, 3).join(" ") + " in:name,description")}&per_page=5`, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": UA, Accept: "application/vnd.github+json" } });
+    const ghUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(keywords(query, 3).join(" ") + " in:name,description")}&per_page=5`;
+    await pace(ghUrl, 6500);
+    const r = await fetch(ghUrl, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": UA, Accept: "application/vnd.github+json" } });
     if (r.status === 403 || r.status === 429) return { code: [], codeError: "GitHub is rate-limiting unauthenticated search; run this query again in a minute" };
     if (!r.ok) return { code: [], codeError: `GitHub answered HTTP ${r.status}` };
     const items: any[] = ((await r.json()) as any)?.items ?? [];
@@ -178,10 +190,8 @@ export async function priorArt(packet: string, queries: string[] = [], fetch: st
 
   let log = readSearchLog(packet);
   const fresh: QueryResult[] = [];
-  for (const q of qs) {
-    fresh.push(await searchOne(q));
-    if (qs.length > 1) await new Promise((r) => setTimeout(r, 400));
-  }
+  // Queries start together; pacing is per source, so each source still gets them one at a time.
+  fresh.push(...(await Promise.all(qs.map((q) => searchOne(q)))));
   if (fresh.length) {
     log = [...log.filter((old) => !fresh.some((f) => f.query === old.query)), ...fresh];
     writeFileSync(logPath(packet), JSON.stringify(log, null, 1) + "\n");
@@ -217,7 +227,6 @@ export async function priorArt(packet: string, queries: string[] = [], fetch: st
     } catch (e) {
       out.push(`Could not fetch ${id}: ${(e as Error).message}. It cannot be charted until its text is in references/.`);
     }
-    await new Promise((r) => setTimeout(r, 300));
   }
   writePriorArt(packet, log);
   markDone(packet, "prior_art");

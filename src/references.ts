@@ -31,14 +31,29 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
+// Each source gets its requests one at a time with a gap between them. Sent faster, Google
+// Patents answers 503, arXiv 429 (it asks for one request every three seconds) and GitHub's
+// unauthenticated search stops after about ten a minute.
+const GAP: Record<string, number> = { "patents.google.com": 2500, "export.arxiv.org": 3200, "api.github.com": 2200 };
+const queue = new Map<string, Promise<void>>();
+export function pace(url: string, gap?: number): Promise<void> {
+  const host = new URL(url).hostname;
+  const wait = gap ?? GAP[host] ?? 300;
+  const prev = queue.get(host) ?? Promise.resolve();
+  const turn = prev.then(() => undefined);
+  queue.set(host, turn.then(() => new Promise<void>((res) => setTimeout(res, wait))));
+  return turn;
+}
+
 async function get(url: string, accept = "text/html,*/*", ms = 25000): Promise<string> {
   if (process.env.PATTY_OFFLINE === "1") throw new Error("PATTY_OFFLINE=1 is set");
   // A busy or rate-limiting server gets two more tries, a little later each time.
   for (let attempt = 0; ; attempt++) {
+    await pace(url);
     const r = await fetch(url, { signal: AbortSignal.timeout(ms), redirect: "follow", headers: { "User-Agent": UA, Accept: accept } });
     if (r.ok) return r.text();
     if (![429, 502, 503].includes(r.status) || attempt >= 2) throw new Error(`HTTP ${r.status}${r.status === 429 || r.status === 503 ? " (the source is busy or rate-limiting; try this one again in a minute)" : ""}`);
-    await new Promise((res) => setTimeout(res, 2500 * (attempt + 1)));
+    await new Promise((res) => setTimeout(res, 6000 * (attempt + 1)));
   }
 }
 
