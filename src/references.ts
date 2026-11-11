@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { today, VERSION } from "./packet.ts";
 
@@ -13,7 +14,7 @@ export type Related = { id: string; title: string; date?: string };
 export type Reference = {
   slug: string; kind: "patent" | "paper" | "code" | "page"; title: string; source: string;
   date?: string; dateLabel?: string; body: string; cites?: Related[]; citedBy?: Related[]; similar?: Related[];
-  status?: string; expiration?: string; owner?: string; independent?: number[];
+  status?: string; expiration?: string; owner?: string; independent?: number[]; family?: string[]; via?: string;
 };
 
 const ENT: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "...", mdash: "—", ndash: "–", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“" };
@@ -62,7 +63,108 @@ export const patentNumber = (s: string): string | null => {
   return /^[A-Z]{2}\d{5,}[A-Z]?\d?$/.test(t) ? t : null;
 };
 
+// ---------- keyed patent source ----------
+// SerpApi serves Google Patents search and patent details through an account key, without the
+// throttling the direct pages apply. The key is the user's own: PATTY_SERPAPI_KEY, or the
+// first line of ~/.patty/serpapi_key. It is never written to a packet, a log or an error.
+export function serpKey(): string | null {
+  if (process.env.PATTY_OFFLINE === "1") return null;
+  const env = process.env.PATTY_SERPAPI_KEY?.trim();
+  if (env) return env;
+  try {
+    const file = join(process.env.PATTY_HOME ?? join(homedir(), ".patty"), "serpapi_key");
+    return existsSync(file) ? readFileSync(file, "utf8").split(/\r?\n/)[0].trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+export const patentSource = () => (serpKey() ? "Google Patents through SerpApi (your key)" : "Google Patents directly (no key; it refuses requests after a burst)");
+
+export async function serp(params: Record<string, string>): Promise<any> {
+  const key = serpKey();
+  if (!key) throw new Error("no SerpApi key is set");
+  const url = `https://serpapi.com/search.json?${new URLSearchParams({ ...params, api_key: key })}`;
+  await pace(url, 400);
+  let r: Response;
+  try {
+    r = await fetch(url, { signal: AbortSignal.timeout(40000), headers: { Accept: "application/json" } });
+  } catch (e) {
+    throw new Error(`SerpApi did not answer (${(e as Error).name === "TimeoutError" ? "timed out" : "network error"})`);
+  }
+  const data = (await r.json().catch(() => null)) as any;
+  if (!r.ok || !data || data.error) throw new Error(`SerpApi: ${String(data?.error ?? `HTTP ${r.status}`).slice(0, 160)}`);
+  return data;
+}
+
+const isDependent = (text: string) => /^\d+\.\s.{0,140}\b(?:of|in|to|by|as claimed in|as recited in|according to)\s+(?:any\s+(?:one\s+)?of\s+)?claims?\s+\d+/i.test(text);
+
+// Turns a SerpApi patent-details response into a stored reference. Exported for tests.
+export function referenceFromSerp(id: string, d: any, descriptionHtml: string): Reference {
+  const independent: number[] = [];
+  const claimBlocks = (Array.isArray(d.claims) ? d.claims : []).map((raw: unknown, i: number) => {
+    const text = String(raw).replace(/\s*\n\s*/g, " ").trim();
+    const n = Number(text.match(/^(\d+)\./)?.[1] ?? i + 1);
+    const dep = isDependent(text);
+    if (!dep) independent.push(n);
+    return `### Claim ${n} (${dep ? "dependent" : "independent"})\n${text}`;
+  });
+  const apps: any[] = Object.values(d.worldwide_applications ?? {}).flat();
+  const mine = apps.find((a) => a?.this_app);
+  const events: any[] = Array.isArray(d.events) ? d.events : [];
+  const expiry = events.find((e) => /expiration/i.test(String(e?.title ?? "")))?.date;
+  const rel = (rows: any[] | undefined): Related[] => (rows ?? []).filter((r) => r?.publication_number).map((r) => ({ id: String(r.publication_number), title: String(r.title ?? ""), date: r.priority_date ?? r.publication_date }));
+  const family = [
+    ...(d.child_applications ?? []).map((c: any) => `${c.relation_type ?? "Child"} of this one: ${c.representative_publication ?? c.application_number} (filed ${c.filing_date ?? "?"}) ${c.title ?? ""}`),
+    ...apps.filter((a) => !a?.this_app && a?.country_code === "US" && a?.document_id).map((a) => `Same family: ${String(a.document_id).replace(/^patent\/|\/en$/g, "")} · ${a.legal_status ?? "status not listed"}`),
+  ];
+  const description = htmlToText(descriptionHtml);
+  const body = [`## Abstract\n${String(d.abstract ?? "").trim()}`, `## Claims\n${claimBlocks.join("\n\n")}`, `## Description\n${description || "Not retrieved. Read it at the source before relying on a \"no\"."}`].join("\n\n");
+  return {
+    slug: id, kind: "patent", title: String(d.title ?? id).trim(), source: `https://patents.google.com/patent/${id}/en`,
+    date: d.priority_date ?? d.filing_date, dateLabel: d.priority_date ? "priority date" : "filing date", body,
+    cites: rel(d.patent_citations?.original), citedBy: rel(d.cited_by?.original), similar: rel((d.similar_documents ?? []).filter((x: any) => x?.is_patent !== false)),
+    status: mine?.legal_status, expiration: expiry, owner: Array.isArray(d.assignees) ? d.assignees[0] : undefined, independent, family, via: "SerpApi",
+  };
+}
+
+async function fetchPatentKeyed(id: string): Promise<Reference> {
+  const d = await serp({ engine: "google_patents_details", patent_id: `patent/${id}/en` });
+  let html = "";
+  if (typeof d.description_link === "string" && d.description_link.startsWith("https://serpapi.com/")) {
+    for (const u of [d.description_link, `${d.description_link}?api_key=${encodeURIComponent(serpKey()!)}`]) {
+      try {
+        const r = await fetch(u, { signal: AbortSignal.timeout(30000) });
+        if (r.ok) {
+          html = await r.text();
+          break;
+        }
+      } catch {}
+    }
+  }
+  const ref = referenceFromSerp(id, d, html);
+  if (!ref.body.includes("### Claim")) throw new Error("SerpApi returned no claims for this patent");
+  return ref;
+}
+
 async function fetchPatent(id: string): Promise<Reference> {
+  if (serpKey()) {
+    try {
+      return await fetchPatentKeyed(id);
+    } catch (e) {
+      // Fall through to the direct page; if that fails too, report both.
+      try {
+        const ref = await fetchPatentDirect(id);
+        ref.via = `the direct page, because the keyed source failed (${(e as Error).message})`;
+        return ref;
+      } catch (e2) {
+        throw new Error(`${(e as Error).message}; and the direct page: ${(e2 as Error).message}`);
+      }
+    }
+  }
+  return fetchPatentDirect(id);
+}
+
+async function fetchPatentDirect(id: string): Promise<Reference> {
   const source = `https://patents.google.com/patent/${id}/en`;
   const html = await get(source);
   const section = (name: string) => htmlToText(html.match(new RegExp(`<section itemprop="${name}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "");
@@ -160,6 +262,7 @@ export function saveReference(packet: string, ref: Reference): string {
           `Expiration: ${ref.expiration ?? "not listed"}`,
           `Owner: ${ref.owner ?? "not listed"}`,
           `Independent claims: ${ref.independent?.length ? ref.independent.join(", ") : "not identified"}`,
+          ...(ref.family?.length ? [`Related applications: ${ref.family.join(" | ")}`] : []),
         ]
       : []),
     "",

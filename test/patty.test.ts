@@ -429,6 +429,59 @@ Drop the hit counter and evict the oldest entry instead; that removes claim 3 el
   });
 });
 
+describe("keyed patent source", () => {
+  // Shaped like the responses SerpApi documents for its Google Patents engines.
+  const DETAILS = {
+    title: "Tenant cache", publication_number: "US0000009B2", priority_date: "2015-01-01", filing_date: "2016-02-02",
+    assignees: ["Example Corp"],
+    worldwide_applications: { "2016": [{ filing_date: "2016-02-02", country_code: "US", document_id: "patent/US0000009B2/en", legal_status: "Active", this_app: true }], "2019": [{ filing_date: "2019-03-03", country_code: "US", document_id: "patent/US20190000001A1/en", legal_status: "Pending" }] },
+    events: [{ date: "2016-02-02", title: "Application filed by Example Corp", type: "filed" }, { date: "2036-05-01", title: "Adjusted expiration", type: "legal-status" }],
+    abstract: "A cache for several tenants.",
+    claims: ["1. A method, comprising:\nstoring an entry with an expiry time; and\ndeleting the entry on a read after the expiry time.", "2. The method of claim 1, wherein the cache is a map.", "3. A system comprising a processor configured to count hits for each entry."],
+    child_applications: [{ application_number: "US16/000,001", relation_type: "Continuation", representative_publication: "US20190000001A1", filing_date: "2019-03-03", title: "Tenant cache" }],
+    patent_citations: { original: [{ publication_number: "US5000000A", title: "Old cache", priority_date: "1990-01-01" }] },
+    cited_by: { original: [{ publication_number: "US9999999B2", title: "Newer cache", priority_date: "2020-01-01" }] },
+    similar_documents: [{ is_patent: true, publication_number: "US8888888B2", title: "Another cache", publication_date: "2014-01-01" }, { is_patent: false, title: "A paper" }],
+    description_link: "https://serpapi.com/searches/x/google_patents_details/description.html",
+  };
+  test("a details response becomes a reference with status, expiry, owner, claims and family", async () => {
+    const { referenceFromSerp, saveReference, readReference } = await import("../src/references.ts");
+    const ref = referenceFromSerp("US0000009B2", DETAILS, "<p>Each tenant has its own cache.</p>");
+    expect([ref.status, ref.expiration, ref.owner, ref.independent]).toEqual(["Active", "2036-05-01", "Example Corp", [1, 3]]);
+    expect(ref.family?.join(" ")).toContain("Continuation of this one: US20190000001A1");
+    expect(ref.similar?.map((r) => r.id)).toEqual(["US8888888B2"]);
+    saveReference(packet, ref);
+    const stored = readReference(packet, "US0000009B2")!;
+    expect(stored.independent).toEqual([1, 3]);
+    expect(stored.claims.get(1)).toContain("deleting the entry on a read after the expiry time");
+    expect(stored.body).toContain("Each tenant has its own cache.");
+    expect(readFileSync(join(packet, "references", "US0000009B2.txt"), "utf8")).toContain("Related applications: Continuation of this one");
+    rmSync(join(packet, "references"), { recursive: true, force: true });
+  });
+  test("a search response becomes hits", async () => {
+    const { hitsFromSerp } = await import("../src/priorart.ts");
+    const r = hitsFromSerp({ search_information: { total_results: 1234 }, organic_results: [{ patent_id: "patent/US8110241B2/en", title: "Foaming powder", snippet: "A powder.", priority_date: "2004-08-17", assignee: "Kraft", publication_number: "US8110241B2" }] }, "q");
+    expect(r.total).toBe(1234);
+    expect(r.hits[0]).toMatchObject({ number: "US8110241B2", link: "https://patents.google.com/patent/US8110241B2/en", priority: "2004-08-17" });
+  });
+  test("the key is read from a file, never used offline, and never stored", async () => {
+    const { serpKey, patentSource } = await import("../src/references.ts");
+    const home = mkdtempSync(join(tmpdir(), "patty-home-"));
+    writeFileSync(join(home, "serpapi_key"), "test-key-not-real\n");
+    const saved = { off: process.env.PATTY_OFFLINE, home: process.env.PATTY_HOME };
+    process.env.PATTY_HOME = home;
+    expect(serpKey()).toBeNull();
+    delete process.env.PATTY_OFFLINE;
+    expect(serpKey()).toBe("test-key-not-real");
+    expect(patentSource()).toContain("SerpApi");
+    expect(patentSource()).not.toContain("test-key-not-real");
+    process.env.PATTY_OFFLINE = saved.off;
+    if (saved.home === undefined) delete process.env.PATTY_HOME;
+    else process.env.PATTY_HOME = saved.home;
+    rmSync(home, { recursive: true, force: true });
+  });
+});
+
 describe("patty_build", () => {
   test("refuses while the check fails", async () => {
     write("SPECIFICATION.md", SPEC.replace("in-memory caches", "caches in [CITY]"));

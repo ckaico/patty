@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DISCLAIMER, markDone } from "./packet.ts";
-import { fetchReference, htmlToText, listReferences, pace, readReference, referencesDir, saveReference, type Reference } from "./references.ts";
+import { fetchReference, htmlToText, listReferences, pace, patentSource, readReference, referencesDir, saveReference, serp, serpKey, type Reference } from "./references.ts";
 
 // Patents: Google Patents' own query endpoint. It is not a documented API and can change or
 // refuse requests at any time, so every failure is written into the file and never thrown.
@@ -25,8 +25,31 @@ const why = (e: unknown) => {
 
 export const googlePatentsLink = (q: string) => `https://patents.google.com/?q=${encodeURIComponent(q)}`;
 
+// Turns a SerpApi patent-search response into hits. Exported for tests.
+export function hitsFromSerp(d: any, query: string): { total?: number; hits: Hit[] } {
+  const rows: any[] = Array.isArray(d?.organic_results) ? d.organic_results : [];
+  const hits = rows.filter((r) => r?.is_scholar !== true).slice(0, PER_QUERY).map((p): Hit => {
+    const number = strip(p.publication_number ?? String(p.patent_id ?? "").replace(/^patent\/|\/[a-z]{2}$/g, ""));
+    return {
+      title: strip(p.title) || "(untitled)", number,
+      link: number ? `https://patents.google.com/patent/${encodeURIComponent(number)}/en` : googlePatentsLink(query),
+      priority: p.priority_date, filed: p.filing_date, granted: p.grant_date,
+      assignee: strip(p.assignee) || undefined, inventor: strip(p.inventor) || undefined, snippet: strip(p.snippet) || undefined,
+    };
+  });
+  const total = Number(d?.search_information?.total_results);
+  return { total: Number.isFinite(total) ? total : undefined, hits };
+}
+
 async function searchPatents(query: string): Promise<{ total?: number; hits: Hit[]; error?: string }> {
   if (offline()) return { hits: [], error: "PATTY_OFFLINE=1 is set" };
+  if (serpKey() && !process.env.PATTY_PATENT_SEARCH_URL) {
+    try {
+      return hitsFromSerp(await serp({ engine: "google_patents", q: query, num: "10" }), query);
+    } catch (e) {
+      return { hits: [], error: (e as Error).message };
+    }
+  }
   const inner = `q=${encodeURIComponent(query)}&oq=${encodeURIComponent(query)}`;
   try {
     const url = `${ENDPOINT}?url=${encodeURIComponent(inner)}&exp=`;
@@ -129,7 +152,7 @@ function writePriorArt(packet: string, log: QueryResult[]) {
     "",
     DISCLAIMER,
     "",
-    "Sources: Google Patents (patents.google.com, through its own unofficial query endpoint), arXiv for papers, GitHub for repositories. The query text was sent to those services; no source code was.",
+    `Sources: ${patentSource()} for patents, arXiv for papers, GitHub for repositories. The query text was sent to those services; no source code was.`,
     "",
     "This is a keyword search. It is not a patentability search. Finding nothing here does not mean the idea is new: most software prior art is in products, documentation and code that no search of this kind reaches. PRIOR_ART_CHART.md compares the closest references found with each mechanism, element by element.",
     "",
@@ -192,6 +215,7 @@ export async function priorArt(packet: string, queries: string[] = [], fetch: st
   const fresh: QueryResult[] = [];
   // Queries start together; pacing is per source, so each source still gets them one at a time.
   fresh.push(...(await Promise.all(qs.map((q) => searchOne(q)))));
+  out.push(`Patent source: ${patentSource()}.`, "");
   if (fresh.length) {
     log = [...log.filter((old) => !fresh.some((f) => f.query === old.query)), ...fresh];
     writeFileSync(logPath(packet), JSON.stringify(log, null, 1) + "\n");
@@ -217,7 +241,9 @@ export async function priorArt(packet: string, queries: string[] = [], fetch: st
       const ref = await fetchReference(id);
       const path = saveReference(packet, ref);
       got.push(ref);
-      out.push(`Fetched ${ref.slug} · ${ref.kind} · ${ref.date ?? "no date"} (${ref.dateLabel ?? ""}) · ${ref.title}`, `  full text: ${path} (${ref.body.length} characters)`);
+      out.push(`Fetched ${ref.slug} · ${ref.kind} · ${ref.date ?? "no date"} (${ref.dateLabel ?? ""}) · ${ref.title}${ref.via ? ` · via ${ref.via}` : ""}`,
+        ...(ref.kind === "patent" ? [`  status ${ref.status ?? "not listed"} · expiration ${ref.expiration ?? "not listed"} · owner ${ref.owner ?? "not listed"} · independent claims ${ref.independent?.join(", ") || "not identified"}`] : []),
+        ...(ref.family?.length ? [`  related applications: ${ref.family.slice(0, 6).join(" | ")}`] : []), `  full text: ${path} (${ref.body.length} characters)`);
       const chase = (label: string, rows?: { id: string; title: string; date?: string }[]) => {
         if (rows?.length) out.push(`  ${label}: ${rows.slice(0, 8).map((r) => `${r.id}${r.date ? ` (${r.date})` : ""} ${r.title}`).join("; ")}`);
       };

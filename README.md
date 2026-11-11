@@ -1,6 +1,6 @@
 # patty-mcp
 
-Last updated: 2026-11-10 · version 0.3.0 · not published
+Last updated: 2026-11-10 · version 0.4.0 · not published
 
 A local MCP server for software inventions. It reads a repository with you and does three jobs:
 
@@ -50,6 +50,18 @@ Add `--scope user` to have it in every project. Any other MCP host takes the sam
 ```json
 { "mcpServers": { "patty": { "command": "bun", "args": ["/absolute/path/to/patty-mcp/src/index.ts"] } } }
 ```
+
+### A dependable patent source (recommended)
+
+Without a key, patents come from Google Patents' own pages, which refuse requests after a burst; on a real run that cut the patent comparison off entirely. With a [SerpApi](https://serpapi.com) key, the same search and the same full text come through their API. Their pricing page lists a free plan of 250 searches a month; a run on a mid-sized repo used about 40 patent requests.
+
+Put the key in a file only you can read. Copy it from your SerpApi dashboard, then:
+
+```bash
+mkdir -p ~/.patty && pbpaste > ~/.patty/serpapi_key && chmod 600 ~/.patty/serpapi_key
+```
+
+`PATTY_SERPAPI_KEY` in the environment works too. The key is read when a request is made; it is never written to a packet or an error message. With a key set, patent queries and publication numbers go to serpapi.com, which queries Google Patents.
 
 Then, in any software repo, say "patent this repo" or "help me build around US1234567B2". The two prompts do the same: `patent-this-repo` and `build-around` (in Claude Code: `/mcp__patty__patent-this-repo`, `/mcp__patty__build-around`).
 
@@ -162,7 +174,7 @@ The server sends no source code anywhere and has no telemetry. It makes these re
 | Tool | Request | What is sent |
 |---|---|---|
 | `patty_start` | Each git remote's host, `info/refs`, anonymously | The remote URL with credentials removed. Skip with `check_remotes: false`. |
-| `patty_prior_art` | `patents.google.com`, `export.arxiv.org`, `api.github.com`; for `fetch`, the reference's own page | The query text; for `fetch`, the publication number or URL. |
+| `patty_prior_art` | `serpapi.com` when a key is set, otherwise `patents.google.com`; `export.arxiv.org`, `api.github.com`; for `fetch`, the reference's own page | The query text; for `fetch`, the publication number or URL. |
 | `patty_tm_check` | `gleanmark.com` (register lookup), `data.iana.org`, the registry RDAP server for each domain, DNS, the candidate domains' own home pages, `registry.npmjs.org`, `pypi.org`, `crates.io`, `api.github.com`, `en.wikipedia.org` | The mark, as a name. |
 
 `PATTY_OFFLINE=1` turns every request off; the affected files then say "search unavailable". `PATTY_PATENT_SEARCH_URL` points the patent search at another endpoint with the same response shape. `PATTY_TM_REGISTER_URL` does the same for the register lookup.
@@ -223,7 +235,7 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 
 ## Tested
 
-- `bun test`: 40 tests on a made-up cache repository, no network. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear". Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
+- `bun test`: 43 tests on a made-up cache repository, no network. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear". Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
 - `bun run typecheck`: strict TypeScript.
 - Figure port: six existing figures (two hand-placed diagrams, four flowcharts) were re-expressed as figure JSON and rendered; each matched the original element for element. One deliberate difference: double-headed arrows now point outward at both ends.
 - The check was run against an existing hand-written provisional draft. It found one placeholder and six reference numerals that were in the figures and never in the text.
@@ -243,7 +255,8 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 - No submission, signing or payment, by design. No hosted version, accounts or billing.
 - The prior art search is keyword search through an unofficial patent endpoint, arXiv and GitHub. Retrieval is the weak point: a reference the search never surfaces is never charted. It does not reach products, documentation, or code that is not on GitHub. Papers are stored as abstracts and repositories as READMEs.
 - The claim chart is a literal reading of the claims named, against this repo. It does not cover equivalents, other patents or pending applications of the same owner, or patents outside the US. Status and expiration come from Google Patents and are unverified. Design patents are not handled: their claim is the drawings.
-- The patent source throttles. On a real run of 21 queries in six minutes, Google Patents began answering 503 after the first eight and refused every full-text fetch, so no patent was charted; arXiv answered 429. Requests are now spaced per source and a refusal is reported as such, but a long session can still be cut off for a while. A keyed source (the USPTO data portal, or a paid semantic search) is the fix and is not wired.
+- Without a key, the patent source throttles. On a real run of 21 queries in six minutes, Google Patents began answering 503 after the first eight and refused every full-text fetch, so no patent was charted; it was still refusing an hour later. Requests are spaced per source and a refusal is reported as such, but the keyless route is not dependable for a real run. The SerpApi route is the fix. It was written from SerpApi's published response format and its parsers are tested against that format; **it has not been run with a live key.**
+- Keyed sources that were looked at and not used: EPO Open Patent Services (free, official, but its FAQ lists no US full text, so US claims cannot be charted from it); the USPTO data portal (official, key needs ID.me; its search runs over application data and it is not confirmed to search claims); PQAI (API calls only on a paid personal plan, commercial use from $700 a month).
 - The chart can show that something is not new. It cannot show that something is new, and it says nothing about obviousness or subject-matter eligibility.
 - The trademark knockout sees the register only through a third party's copy, and only for the name as typed.
 - Drawings are block diagrams, data tables and flowcharts. Fonts in the PDFs are Tinos and Arimo (SIL Open Font License 1.1, from the `@expo-google-fonts` packages).
