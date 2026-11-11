@@ -11,6 +11,7 @@ import { check } from "./check.ts";
 import { build } from "./build.ts";
 import { priorArt } from "./priorart.ts";
 import { tmCheck } from "./tm.ts";
+import { sources } from "./sources.ts";
 
 const server = new McpServer(
   { name: "patty", version: VERSION },
@@ -20,7 +21,7 @@ const server = new McpServer(
       `When the user asks to patent a repo, a codebase or "this", call patty_start with kind "provisional" first and follow the method it returns: ` +
       `read the code, write EVIDENCE.md, search and chart prior art with patty_prior_art, write SPECIFICATION.md, then patty_figures, patty_check and patty_build. Never tell the user an invention is novel or patentable; report what the search found and how it differs. ` +
       `When the user wants to build around, avoid or check their code against someone else's patent, call patty_start with kind "clearance" and follow that method: fetch the patent, chart every independent claim against the code in CLAIM_CHART.md, patty_check, patty_build. Never tell the user their code is clear, safe or non-infringing; report which claim elements were and were not found. For a trademark, call patty_tm_check. The human approves the packet, then signs, pays and submits in their own USPTO account. ` +
-      `Never sign, submit, pay or operate a USPTO account for them. ${DISCLAIMER}`,
+      `Patty holds no accounts: outside services are the user's own, and patty_sources shows which are connected and how to connect the rest. Never ask for a key in chat, never type one, and never sign up for a service for the user. Never sign, submit, pay or operate a USPTO account for them. ${DISCLAIMER}`,
   },
 );
 
@@ -155,6 +156,23 @@ server.registerTool(
   async ({ mark, goods_services, packet_path }) => {
     try {
       return ok(await tmCheck(packet_path ?? defaultPacket(), mark, goods_services));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.registerTool(
+  "patty_sources",
+  {
+    title: "Connections",
+    description:
+      "Lists every outside service Patty can use (patent search and full text, papers, code, the trademark register), whether each is connected, and how the user connects their own account. Patty has no accounts of its own: the user signs up for, and pays, each service directly, and saves the key on their own machine. Also lists hosted patent and trademark connectors the user can add to their MCP host. With test: true, tries each connection now and, for a keyed service, reports the plan and what is left on it. Call this when the user asks what Patty is connected to, when a search comes back unavailable, or before a first real run.",
+    inputSchema: { test: z.boolean().default(false).describe("Try each connection now. Uses no paid searches.") },
+  },
+  async ({ test }) => {
+    try {
+      return ok(await sources(test));
     } catch (e) {
       return fail(e);
     }

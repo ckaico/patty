@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { githubHeaders, githubToken, serpKey } from "./keys.ts";
+export { serpKey } from "./keys.ts";
 import { today, VERSION } from "./packet.ts";
 
 // Full text of prior art references, kept in the packet so quotes can be checked against it.
@@ -36,6 +37,7 @@ export function htmlToText(html: string): string {
 // Patents answers 503, arXiv 429 (it asks for one request every three seconds) and GitHub's
 // unauthenticated search stops after about ten a minute.
 const GAP: Record<string, number> = { "patents.google.com": 2500, "export.arxiv.org": 3200, "api.github.com": 2200 };
+export const githubSearchGap = () => (githubToken() ? 2200 : 6500);
 const queue = new Map<string, Promise<void>>();
 export function pace(url: string, gap?: number): Promise<void> {
   const host = new URL(url).hostname;
@@ -51,7 +53,8 @@ async function get(url: string, accept = "text/html,*/*", ms = 25000): Promise<s
   // A busy or rate-limiting server gets two more tries, a little later each time.
   for (let attempt = 0; ; attempt++) {
     await pace(url);
-    const r = await fetch(url, { signal: AbortSignal.timeout(ms), redirect: "follow", headers: { "User-Agent": UA, Accept: accept } });
+    const headers = new URL(url).hostname === "api.github.com" ? githubHeaders(accept) : { "User-Agent": UA, Accept: accept };
+    const r = await fetch(url, { signal: AbortSignal.timeout(ms), redirect: "follow", headers });
     if (r.ok) return r.text();
     if (![429, 502, 503].includes(r.status) || attempt >= 2) throw new Error(`HTTP ${r.status}${r.status === 429 || r.status === 503 ? " (the source is busy or rate-limiting; try this one again in a minute)" : ""}`);
     await new Promise((res) => setTimeout(res, 6000 * (attempt + 1)));
@@ -67,17 +70,6 @@ export const patentNumber = (s: string): string | null => {
 // SerpApi serves Google Patents search and patent details through an account key, without the
 // throttling the direct pages apply. The key is the user's own: PATTY_SERPAPI_KEY, or the
 // first line of ~/.patty/serpapi_key. It is never written to a packet, a log or an error.
-export function serpKey(): string | null {
-  if (process.env.PATTY_OFFLINE === "1") return null;
-  const env = process.env.PATTY_SERPAPI_KEY?.trim();
-  if (env) return env;
-  try {
-    const file = join(process.env.PATTY_HOME ?? join(homedir(), ".patty"), "serpapi_key");
-    return existsSync(file) ? readFileSync(file, "utf8").split(/\r?\n/)[0].trim() || null : null;
-  } catch {
-    return null;
-  }
-}
 export const patentSource = () => (serpKey() ? "Google Patents through SerpApi (your key)" : "Google Patents directly (no key; it refuses requests after a burst)");
 
 export async function serp(params: Record<string, string>): Promise<any> {

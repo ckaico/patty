@@ -48,6 +48,12 @@ Pass packet_path (the packet folder reported at the top of this message) to ever
       the description for each element.
    e. Write patty-packet/PRIOR_ART_CHART.md (format below). Be hard on your own
       mechanism: if a reference has the element in other words, that is a "yes".
+   f. If this session also has a patent-search connector the human has signed in to
+      (tools for similar-patent, natural-language or non-patent-literature search), use
+      it for extra queries. Whatever it turns up still goes through patty_prior_art
+      fetch and into the chart: a result nobody fetched cannot be quoted or checked.
+   If the patent search comes back unavailable, call patty_sources with test: true and
+   tell the human what it shows. Never ask for a key in chat.
    If a mechanism is knocked out, do not lead with it. Build the specification around
    what the closest references lack, and say what that difference is.
    If the search was unavailable, say so to the human and carry on without a chart.
@@ -281,6 +287,8 @@ ${DISCLAIMER}
 1. Call patty_tm_check with the mark and a plain description of the goods or services
    ("downloadable software for ...", "online software for ..."). Pass packet_path if the
    packet is not in the current folder.
+   If this session also has a trademark connector the human has signed in to (similar
+   marks, sound-alikes, clearance), run the mark through it too and report what it adds.
 2. Read TM_KNOCKOUT.md with the human. A knockout only finds the obvious conflicts; it is
    not a clearance search and it cannot see the USPTO register. The human runs the USPTO
    trademark search themselves through the link in the file.

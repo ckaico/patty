@@ -482,6 +482,31 @@ describe("keyed patent source", () => {
   });
 });
 
+describe("patty_sources", () => {
+  test("lists every connection, says whose accounts they are, and never prints a key", async () => {
+    const { sources, sourcesLine } = await import("../src/sources.ts");
+    const home = mkdtempSync(join(tmpdir(), "patty-home-"));
+    writeFileSync(join(home, "serpapi_key"), "test-key-not-real\n");
+    const saved = { off: process.env.PATTY_OFFLINE, home: process.env.PATTY_HOME };
+    process.env.PATTY_HOME = home;
+    const offline = await sources(true);
+    expect(offline).toContain("SerpApi (Google Patents data): NOT CONNECTED");
+    expect(offline).toContain("Live test: not tested (PATTY_OFFLINE=1)");
+    delete process.env.PATTY_OFFLINE;
+    const out = await sources(false);
+    process.env.PATTY_OFFLINE = saved.off;
+    if (saved.home === undefined) delete process.env.PATTY_HOME;
+    else process.env.PATTY_HOME = saved.home;
+    rmSync(home, { recursive: true, force: true });
+    expect(out).toContain("SerpApi (Google Patents data): CONNECTED (your account)");
+    expect(out).toContain("Patty has no accounts of its own");
+    expect(out).toContain("USPTO Open Data Portal: NOT BUILT IN");
+    expect(out).toContain("Clerq");
+    expect(out).not.toContain("test-key-not-real");
+    expect(sourcesLine()).toContain("patty_sources");
+  });
+});
+
 describe("patty_build", () => {
   test("refuses while the check fails", async () => {
     write("SPECIFICATION.md", SPEC.replace("in-memory caches", "caches in [CITY]"));

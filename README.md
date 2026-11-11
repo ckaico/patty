@@ -1,6 +1,6 @@
 # patty-mcp
 
-Last updated: 2026-11-10 · version 0.4.0 · not published
+Last updated: 2026-11-10 · version 0.5.0 · not published
 
 A local MCP server for software inventions. It reads a repository with you and does three jobs:
 
@@ -51,6 +51,24 @@ Add `--scope user` to have it in every project. Any other MCP host takes the sam
 { "mcpServers": { "patty": { "command": "bun", "args": ["/absolute/path/to/patty-mcp/src/index.ts"] } } }
 ```
 
+### Connections
+
+Patty has no accounts of its own. Every outside service is the user's: they sign up, they pay where it charges, and the key stays on their machine. `patty_sources` shows the whole picture, and with `test: true` tries each connection and reports what is left on a keyed plan.
+
+| Service | Used for | Account |
+|---|---|---|
+| SerpApi | Patent search and full text (Google Patents data) | Your key. Recommended. |
+| Google Patents, direct pages | The same, when no key is set | None. Throttles. |
+| arXiv | Papers | None |
+| GitHub | Code as prior art; same-name accounts | None; an optional token lifts the search limit |
+| GleanMark, open search | USPTO trademark register by name | None |
+| Domain registries, npm, PyPI, crates.io, Wikipedia | Trademark knockout | None |
+| USPTO Open Data Portal, EPO OPS, PQAI | Listed, with the reason each is not built in | n/a |
+
+Keys go in `~/.patty/`, one file per service (`serpapi_key`, `github_token`), or in `PATTY_SERPAPI_KEY` and `PATTY_GITHUB_TOKEN`. They are read when a request is made and never written to a packet or an error message.
+
+Hosted patent and trademark connectors with their own sign-in (GleanMark, Clarivate CompuMark, Haloo, Clerq, Patlytics, Solve Intelligence, IP Author) are not something Patty can log in to. The user adds them to their MCP host. When one is present in the session, the drafting method tells the host model to search with it too and to bring what it finds into Patty's charts, where quotes are checked. None was tested with an account.
+
 ### A dependable patent source (recommended)
 
 Without a key, patents come from Google Patents' own pages, which refuse requests after a burst; on a real run that cut the patent comparison off entirely. With a [SerpApi](https://serpapi.com) key, the same search and the same full text come through their API. Their pricing page lists a free plan of 250 searches a month; a run on a mid-sized repo used about 40 patent requests.
@@ -74,6 +92,7 @@ Then, in any software repo, say "patent this repo" or "help me build around US12
 | `patty_figures` | `figures[]`, `packet_path` | Renders SVG drawings from JSON: `flow` (flowchart with decisions, side boxes, rejoin and loop-back arrows), `block` (boxes and data tables on a grid, arrows routed), `canvas` (exact coordinates). Black on white, reference numerals, one figure per file. Returns each figure's numerals and layout warnings. |
 | `patty_check` | `packet_path` | The lint. See below. |
 | `patty_build` | `packet_path`, optional `inventors`, `first_public_disclosure`, `nothing_public_yet`, `filed` | Runs the check. For a clearance packet, writes `CLEARANCE_REPORT.md`. For a provisional packet, writes `specification.pdf`, `drawings.pdf`, `COVER_SHEET.md`, `FILING_STEPS.md`, `DOCKET.md`. Facts not supplied are marked for the human; none are guessed. |
+| `patty_sources` | `test` | Lists every outside service Patty can use, whether it is connected, and how to connect your own account. With `test`, tries each one. |
 | `patty_tm_check` | `mark`, `goods_services`, `packet_path` | Trademark knockout: the USPTO register for the name as typed (through GleanMark, a third party), exact-name domain registrations and what they serve, same-name packages and accounts, Wikipedia. Writes `TM_KNOCKOUT.md` and `TM_FIELDS.md`. Does not search sound-alikes, similar marks or logos. |
 
 `packet_path` defaults to `patty-packet/` in the folder the server was started in.
@@ -235,7 +254,8 @@ None of these reads a codebase, and none ties its conclusions to quotes that are
 
 ## Tested
 
-- `bun test`: 43 tests on a made-up cache repository, no network. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear". Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
+- `patty_sources` with `test: true`, live, no keys set: the direct patent pages, arXiv, GitHub and GleanMark each answered; SerpApi reported no key.
+- `bun test`: 44 tests on a made-up cache repository, no network. The claim chart tests cover a paraphrased element, an uncharted independent claim, a bad code citation, a result that contradicts its rows, and a report that never says "clear". Covers the repo map, each figure type, every failure the check is meant to catch, the prior art chart rules (a quote not in the reference, a reference never fetched, a knockout reported as anything else), the build refusing a failing packet, the PDF header and fonts, the order of the last filing steps, date arithmetic, and the offline paths of the two searches.
 - `bun run typecheck`: strict TypeScript.
 - Figure port: six existing figures (two hand-placed diagrams, four flowcharts) were re-expressed as figure JSON and rendered; each matched the original element for element. One deliberate difference: double-headed arrows now point outward at both ends.
 - The check was run against an existing hand-written provisional draft. It found one placeholder and six reference numerals that were in the figures and never in the text.
@@ -285,6 +305,7 @@ src/start.ts     patty_start        src/repomap.ts   repo map
 src/figures.ts   patty_figures      src/check.ts     patty_check
 src/build.ts     patty_build        src/pdf.ts       PDF writers
 src/priorart.ts  patty_prior_art    src/tm.ts        patty_tm_check
+src/sources.ts   patty_sources      src/keys.ts      where keys are read from
 src/references.ts  reference fetching and storage    src/chart.ts  prior art chart rules
 src/claimchart.ts  claim chart rules (a patent against this repo)
 src/packet.ts    packet folder and STATUS.json

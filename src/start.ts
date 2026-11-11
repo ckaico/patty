@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { initPacket, PACKET_DIR, readStatus, writeStatus, type Kind } from "./packet.ts";
 import { CLEARANCE_METHOD, PROVISIONAL_METHOD, TRADEMARK_METHOD } from "./method.ts";
 import { repoMap } from "./repomap.ts";
+import { sourcesLine } from "./sources.ts";
 
 // Keeps the packet out of version control: an unfiled disclosure should not be pushed.
 function ignorePacket(repo: string): string {
@@ -25,6 +26,7 @@ export async function start(repoPath: string, kind: Kind, checkRemotes = true): 
   const head = [
     `Packet folder: ${packet} (${created ? "created" : "already existed; nothing in it was overwritten"})`,
     ignored,
+    sourcesLine(),
     "",
   ];
   if (kind === "trademark") return [...head, TRADEMARK_METHOD].join("\n");

@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DISCLAIMER, markDone } from "./packet.ts";
-import { fetchReference, htmlToText, listReferences, pace, patentSource, readReference, referencesDir, saveReference, serp, serpKey, type Reference } from "./references.ts";
+import { githubHeaders } from "./keys.ts";
+import { fetchReference, githubSearchGap, htmlToText, listReferences, pace, patentSource, readReference, referencesDir, saveReference, serp, serpKey, type Reference } from "./references.ts";
 
 // Patents: Google Patents' own query endpoint. It is not a documented API and can change or
 // refuse requests at any time, so every failure is written into the file and never thrown.
@@ -116,8 +117,8 @@ async function searchCode(query: string): Promise<{ code: Other[]; codeError?: s
   try {
     // One request per query: unauthenticated GitHub search allows about ten a minute.
     const ghUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(keywords(query, 3).join(" ") + " in:name,description")}&per_page=5`;
-    await pace(ghUrl, 6500);
-    const r = await fetch(ghUrl, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": UA, Accept: "application/vnd.github+json" } });
+    await pace(ghUrl, githubSearchGap());
+    const r = await fetch(ghUrl, { signal: AbortSignal.timeout(15000), headers: githubHeaders() });
     if (r.status === 403 || r.status === 429) return { code: [], codeError: "GitHub is rate-limiting unauthenticated search; run this query again in a minute" };
     if (!r.ok) return { code: [], codeError: `GitHub answered HTTP ${r.status}` };
     const items: any[] = ((await r.json()) as any)?.items ?? [];
