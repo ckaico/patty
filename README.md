@@ -35,9 +35,25 @@ A product is covered by a claim only if it has every element of it. The chart sh
 
 ## Install
 
-Needs [bun](https://bun.sh) 1.1 or later. Built and tested on bun 1.4.2, macOS. Node is not required.
+Needs [bun](https://bun.sh) 1.1 or later. Node is not required.
 
-Clone the repository, then from its folder:
+In Claude Code, one line:
+
+```bash
+claude mcp add patty -- bunx github:ckaico/patty
+```
+
+Add `--scope user` to have it in every project. In any other MCP host the server is the stdio command `bunx github:ckaico/patty`:
+
+```json
+{ "mcpServers": { "patty": { "command": "bunx", "args": ["github:ckaico/patty"] } } }
+```
+
+Then open a software repo and say "patent this repo".
+
+### From a clone
+
+To work on Patty itself, or to pin a copy, clone the repository and run it from its folder:
 
 ```bash
 git clone https://github.com/ckaico/patty && cd patty
@@ -54,7 +70,7 @@ claude mcp add patty -- bun "$PWD/src/index.ts"
 Add `--scope user` to have it in every project. Any other MCP host takes the same stdio command:
 
 ```json
-{ "mcpServers": { "patty": { "command": "bun", "args": ["/absolute/path/to/patty-mcp/src/index.ts"] } } }
+{ "mcpServers": { "patty": { "command": "bun", "args": ["/absolute/path/to/patty/src/index.ts"] } } }
 ```
 
 ### Connections
