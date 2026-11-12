@@ -51,6 +51,8 @@ Add `--scope user` to have it in every project. In any other MCP host the server
 
 Then open a software repo and say "patent this repo".
 
+`bunx` keeps the copy it first downloaded. To install or move to a specific release, pin its tag: `bunx github:ckaico/patty#v0.6.0`.
+
 ### From a clone
 
 To work on Patty itself, or to pin a copy, clone the repository and run it from its folder:
