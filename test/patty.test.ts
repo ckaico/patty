@@ -482,6 +482,223 @@ describe("keyed patent source", () => {
   });
 });
 
+describe("USPTO Open Data Portal", () => {
+  // Shaped like PatentDataResponse in the portal's OpenAPI file (data.uspto.gov/swagger/swagger.yaml),
+  // using its own example values.
+  const META = {
+    count: 1,
+    patentFileWrapperDataBag: [{
+      applicationNumberText: "14104993",
+      applicationMetaData: {
+        applicationStatusCode: 150, applicationStatusDescriptionText: "Patented Case", applicationStatusDate: "2016-05-18",
+        filingDate: "2012-12-19", grantDate: "2016-06-07", patentNumber: "9362380", inventionTitle: "HETEROJUNCTION BIPOLAR TRANSISTOR",
+        firstApplicantName: "STMicroelectronics S.A.", firstInventorName: "Pascal Chevalier", earliestPublicationNumber: "US 2014-0167116 A1",
+      },
+    }, {
+      applicationNumberText: "16330077",
+      applicationMetaData: { applicationStatusDescriptionText: "Docketed New Case - Ready for Examination", filingDate: "2019-03-01", inventionTitle: "Cache for tenants", earliestPublicationNumber: "US 2019-0000001 A1" },
+    }],
+    requestIdentifier: "0ff4c603-a290-4659-8092-f68b408150c4",
+  };
+  test("an application record becomes an official status line, kept in the stored reference", async () => {
+    const { usptoStatusFromOdp, usptoApplicationNumber, saveReference, readReference } = await import("../src/references.ts");
+    expect(usptoApplicationNumber("US14/104,993")).toBe("14104993");
+    expect(usptoApplicationNumber("US:14/104,993")).toBe("14104993");
+    expect(usptoApplicationNumber("PCT/US2007/019317")).toBeNull();
+    const status = usptoStatusFromOdp(META)!;
+    expect(status).toBe("Patented Case (status date 2016-05-18; application 14104993; patent 9362380 granted 2016-06-07)");
+    expect(usptoStatusFromOdp({ count: 0, patentFileWrapperDataBag: [] })).toBeNull();
+    saveReference(packet, { slug: "US9362380B2", kind: "patent", title: "Transistor", source: "x", body: "## Abstract\nA.\n\n## Claims\n### Claim 1 (independent)\n1. A transistor.", status: "Active", applicationNumber: "US14/104,993", usptoStatus: status });
+    const text = readFileSync(join(packet, "references", "US9362380B2.txt"), "utf8");
+    expect(text).toMatch(/^Application number: US14\/104,993$/m);
+    expect(text).toMatch(/^USPTO status \(official, checked \d{4}-\d{2}-\d{2}\): Patented Case/m);
+    const stored = readReference(packet, "US9362380B2")!;
+    expect(stored.usptoStatus).toStartWith("Patented Case");
+    expect(stored.status).toStartWith("Active");
+    rmSync(join(packet, "references"), { recursive: true, force: true });
+  });
+  test("a search response becomes hits: grants by patent number, applications by publication number", async () => {
+    const { hitsFromOdp } = await import("../src/priorart.ts");
+    const r = hitsFromOdp(META, "q");
+    expect(r.total).toBe(1);
+    expect(r.hits.map((h) => h.number)).toEqual(["US9362380", "US20190000001A1"]);
+    expect(r.hits[0]).toMatchObject({ title: "HETEROJUNCTION BIPOLAR TRANSISTOR", granted: "2016-06-07", assignee: "STMicroelectronics S.A." });
+    expect(r.hits[0].snippet).toContain("USPTO status: Patented Case");
+  });
+  test("the SerpApi details response carries the application number through", async () => {
+    const { referenceFromSerp } = await import("../src/references.ts");
+    expect(referenceFromSerp("US11734097B1", { title: "t", application_number: "US17/160,053", claims: ["1. A thing."] }, "").applicationNumber).toBe("US17/160,053");
+  });
+});
+
+describe("EPO Open Patent Services", () => {
+  // Shaped like the responses in the OPS v3.2 reference guide (version 1.3.20) and its XML schemas.
+  const SEARCH = `<?xml version="1.0" encoding="UTF-8"?>
+<ops:world-patent-data xmlns:ops="http://ops.epo.org" xmlns="http://www.epo.org/exchange">
+<ops:biblio-search total-result-count="57">
+<ops:query syntax="CQL">ta all "cache eviction expired"</ops:query>
+<ops:range begin="1" end="2"/>
+<ops:search-result>
+<exchange-documents>
+<exchange-document system="ops.epo.org" family-id="37717388" country="EP" doc-number="1000000" kind="A1">
+<bibliographic-data>
+<publication-reference>
+<document-id document-id-type="docdb"><country>EP</country><doc-number>1000000</doc-number><kind>A1</kind><date>20000517</date></document-id>
+<document-id document-id-type="epodoc"><doc-number>EP1000000</doc-number><date>20000517</date></document-id>
+</publication-reference>
+<application-reference doc-id="1"><document-id document-id-type="epodoc"><doc-number>EP19990203729</doc-number><date>19991108</date></document-id></application-reference>
+<priority-claims><priority-claim sequence="1" kind="national"><document-id document-id-type="epodoc"><doc-number>NL19981010536</doc-number><date>19981112</date></document-id></priority-claim></priority-claims>
+<parties><applicants>
+<applicant sequence="1" data-format="epodoc"><applicant-name><name>EXAMPLE CORP [US]</name></applicant-name></applicant>
+<applicant sequence="1" data-format="original"><applicant-name><name>Example Corp.</name></applicant-name></applicant>
+</applicants></parties>
+<invention-title lang="de">Zwischenspeicher</invention-title>
+<invention-title lang="en">Cache with expiry</invention-title>
+</bibliographic-data>
+<abstract lang="en"><p>Expired entries are removed before live ones.</p></abstract>
+</exchange-document>
+<exchange-document system="ops.epo.org" family-id="1" country="WO" doc-number="2019123456" kind="A1">
+<bibliographic-data>
+<publication-reference><document-id document-id-type="docdb"><country>WO</country><doc-number>2019123456</doc-number><kind>A1</kind><date>20190627</date></document-id></publication-reference>
+<invention-title lang="en">Eviction of cache entries</invention-title>
+</bibliographic-data>
+</exchange-document>
+</exchange-documents>
+</ops:search-result>
+</ops:biblio-search>
+</ops:world-patent-data>`;
+  const CLAIMS_BLOCK = `<?xml version="1.0" encoding="UTF-8"?>
+<ops:world-patent-data xmlns:ops="http://ops.epo.org" xmlns:ftxt="http://www.epo.org/fulltext">
+<ftxt:fulltext-documents><ftxt:fulltext-document system="ops.epo.org" fulltext-format="text-only">
+<ftxt:bibliographic-data><ftxt:publication-reference data-format="docdb"><ftxt:document-id><ftxt:country>EP</ftxt:country><ftxt:doc-number>1000000</ftxt:doc-number><ftxt:kind>A1</ftxt:kind></ftxt:document-id></ftxt:publication-reference></ftxt:bibliographic-data>
+<ftxt:claims lang="DE"><ftxt:claim><ftxt:claim-text>1. Ein Verfahren.</ftxt:claim-text></ftxt:claim></ftxt:claims>
+<ftxt:claims lang="EN"><ftxt:claim><ftxt:claim-text>1. A method comprising storing an entry with an expiry time; and deleting the entry on a read after the expiry time.</ftxt:claim-text><ftxt:claim-text>2. The method according to claim 1, wherein the cache is a map.</ftxt:claim-text><ftxt:claim-text>3. A system comprising a processor configured to count hits for each entry.</ftxt:claim-text></ftxt:claim></ftxt:claims>
+</ftxt:fulltext-document></ftxt:fulltext-documents>
+</ops:world-patent-data>`;
+  const CLAIMS_NUMBERED = `<fulltext-documents xmlns="http://www.epo.org/fulltext"><fulltext-document><claims id="claims01" lang="en">
+<claim id="c-en-0001" num="0001"><claim-text>A method comprising storing an entry.</claim-text></claim>
+<claim id="c-en-0002" num="0002"><claim-text>The method as claimed in claim 1, wherein the entry expires.</claim-text></claim>
+</claims></fulltext-document></fulltext-documents>`;
+  const DESCRIPTION = `<ops:world-patent-data xmlns:ops="http://ops.epo.org"><ftxt:fulltext-documents xmlns:ftxt="http://www.epo.org/fulltext"><ftxt:fulltext-document>
+<ftxt:description lang="EN"><ftxt:p>Each tenant has its own cache.</ftxt:p><ftxt:p>Expired entries go first.</ftxt:p></ftxt:description>
+</ftxt:fulltext-document></ftxt:fulltext-documents></ops:world-patent-data>`;
+
+  test("a bibliographic search response becomes hits, English title preferred", async () => {
+    const { hitsFromOps } = await import("../src/priorart.ts");
+    const r = hitsFromOps(SEARCH);
+    expect(r.total).toBe(57);
+    expect(r.hits.map((h) => h.number)).toEqual(["EP1000000A1", "WO2019123456A1"]);
+    expect(r.hits[0]).toMatchObject({ title: "Cache with expiry", priority: "1998-11-12", filed: "1999-11-08", assignee: "Example Corp.", snippet: "Expired entries are removed before live ones." });
+    expect(r.hits[0].link).toBe("https://worldwide.espacenet.com/patent/search?q=pn%3DEP1000000A1");
+  });
+  test("claims in one text block or one element per claim both come out numbered, English first", async () => {
+    const { claimsFromOps } = await import("../src/references.ts");
+    const a = claimsFromOps(CLAIMS_BLOCK);
+    expect(a.map((c) => c.n)).toEqual([1, 2, 3]);
+    expect(a[1].text).toBe("The method according to claim 1, wherein the cache is a map.");
+    const b = claimsFromOps(CLAIMS_NUMBERED);
+    expect(b).toEqual([{ n: 1, text: "A method comprising storing an entry." }, { n: 2, text: "The method as claimed in claim 1, wherein the entry expires." }]);
+  });
+  test("biblio, claims and description become a stored reference that can be charted", async () => {
+    const { referenceFromOps, saveReference, readReference, opsNumber } = await import("../src/references.ts");
+    expect(opsNumber("EP1000000A1")).toBe("EP1000000.A1");
+    expect(opsNumber("WO2019123456A1")).toBe("WO2019123456.A1");
+    expect(opsNumber("US9362380B2")).toBeNull();
+    const ref = referenceFromOps("EP1000000A1", SEARCH, CLAIMS_BLOCK, DESCRIPTION);
+    expect([ref.title, ref.owner, ref.date, ref.dateLabel, ref.independent]).toEqual(["Cache with expiry", "Example Corp.", "1998-11-12", "priority date", [1, 3]]);
+    saveReference(packet, ref);
+    const stored = readReference(packet, "EP1000000A1")!;
+    expect(stored.claims.get(2)).toBe("2. The method according to claim 1, wherein the cache is a map.");
+    expect(stored.body).toContain("Each tenant has its own cache.\nExpired entries go first.");
+    expect(stored.status).toContain("EPO OPS bibliographic data carries no legal status");
+    rmSync(join(packet, "references"), { recursive: true, force: true });
+  });
+});
+
+describe("PQAI", () => {
+  // Shaped like the /search/102 response: the API guide's "results" list, with the fields
+  // PQAI's open-source server writes for each document.
+  const RESULTS = {
+    results: [
+      { id: "US7654321B2", type: "patent", publication_id: "US7654321B2", title: "Cache eviction by expiry", abstract: "Entries whose time has passed are removed first.", publication_date: "2010-02-02", www_link: "https://patents.google.com/patent/US7654321B2/en", owner: "Example Corp", image: null, alias: null, inventors: ["A. Person"], filing_date: "2007-01-01", priority_date: "2006-06-06", score: 0.91, snippet: null, mapping: null, index: "G06F" },
+      { id: "10.1145/123", type: "npl", title: "A paper", abstract: "x", publication_date: "2001-01-01", www_link: "https://example.org/paper", score: 0.5 },
+    ],
+    query: "cache that evicts expired entries first", latent_query: null,
+  };
+  test("a search response becomes hits, papers left out", async () => {
+    const { hitsFromPqai } = await import("../src/priorart.ts");
+    const r = hitsFromPqai(RESULTS, "q");
+    expect(r.hits).toHaveLength(1);
+    expect(r.hits[0]).toMatchObject({ number: "US7654321B2", priority: "2006-06-06", filed: "2007-01-01", assignee: "Example Corp", inventor: "A. Person", snippet: "Entries whose time has passed are removed first." });
+  });
+});
+
+describe("patent sources merged", () => {
+  test("one publication found by several sources is listed once, with every source and the fullest number", async () => {
+    const { mergeHits, publicationKey } = await import("../src/priorart.ts");
+    expect(publicationKey("US 9,362,380 B2")).toBe("US9362380");
+    expect(publicationKey("US20140167116A1")).toBe("US20140167116");
+    const hit = (number: string, title = number) => ({ title, number, link: `https://patents.google.com/patent/${number}/en` });
+    const merged = mergeHits([
+      { source: "Google Patents (SerpApi)", hits: [hit("US9362380B2"), hit("US1111111B1")] },
+      { source: "USPTO ODP", hits: [hit("US2222222"), { ...hit("US9362380"), granted: "2016-06-07" }] },
+      { source: "PQAI", hits: [hit("US2222222B2")] },
+    ]);
+    // First hits of every source, then second hits.
+    expect(merged.map((h) => h.number)).toEqual(["US9362380B2", "US2222222B2", "US1111111B1"]);
+    expect(merged[0].sources).toEqual(["Google Patents (SerpApi)", "USPTO ODP"]);
+    expect(merged[0].granted).toBe("2016-06-07");
+    expect(merged[1].sources).toEqual(["USPTO ODP", "PQAI"]);
+    expect(merged[1].link).toBe("https://patents.google.com/patent/US2222222B2/en");
+  });
+  test("a source that failed is reported on its own, and an old search log still loads", async () => {
+    const { priorArt, readSearchLog } = await import("../src/priorart.ts");
+    mkdirSync(join(packet, "references"), { recursive: true });
+    const OLD = { query: "old query from 0.5.0", at: "2026-11-10T00:00:00.000Z", total: 3, hits: [{ title: "Old hit", number: "US1234567B2", link: "https://patents.google.com/patent/US1234567B2/en" }], papers: [], code: [] };
+    const NEW = {
+      query: "new query", at: "2026-11-11T00:00:00.000Z", total: 10, papers: [], code: [],
+      hits: [{ title: "Found twice", number: "US7654321B2", link: "https://patents.google.com/patent/US7654321B2/en", sources: ["Google Patents (SerpApi)", "PQAI"] }],
+      patentSources: [{ name: "Google Patents (SerpApi)", total: 10, count: 1 }, { name: "EPO OPS", count: 0, error: "EPO OPS: HTTP 403 (This request has been rejected due to the violation of Fair Use policy)" }, { name: "PQAI", count: 1 }],
+    };
+    writeFileSync(join(packet, "references", "search.json"), JSON.stringify([OLD, NEW]));
+    expect(readSearchLog(packet)).toHaveLength(2);
+    await priorArt(packet, [], ["US0000001A"]);
+    const md = readFileSync(join(packet, "PRIOR_ART.md"), "utf8");
+    expect(md).toContain("3 results reported; the first 1:");
+    expect(md).toContain("US1234567B2");
+    expect(md).toContain("Search unavailable from EPO OPS: EPO OPS: HTTP 403");
+    expect(md).toContain("Per source: Google Patents (SerpApi) 10 reported, 1 listed; EPO OPS unavailable");
+    expect(md).toContain("US7654321B2 · from Google Patents (SerpApi), PQAI");
+    rmSync(join(packet, "references"), { recursive: true, force: true });
+    rmSync(join(packet, "PRIOR_ART.md"), { force: true });
+  });
+  test("keys are read from files, listed as connected sources, never printed, and scrubbed from errors", async () => {
+    const { patentSource, scrub } = await import("../src/references.ts");
+    const { sources, sourcesLine } = await import("../src/sources.ts");
+    const home = mkdtempSync(join(tmpdir(), "patty-home-"));
+    const secrets = { uspto_key: "uspto-test-not-real", epo_key: "epo-key-test-not-real", epo_secret: "epo-secret-test-not-real", pqai_key: "pqai-test-not-real" };
+    for (const [f, v] of Object.entries(secrets)) writeFileSync(join(home, f), `${v}\n`);
+    const saved = { off: process.env.PATTY_OFFLINE, home: process.env.PATTY_HOME };
+    process.env.PATTY_HOME = home;
+    expect(patentSource()).not.toContain("USPTO");
+    delete process.env.PATTY_OFFLINE;
+    const listed = patentSource();
+    const line = sourcesLine();
+    const out = await sources(false);
+    process.env.PATTY_OFFLINE = saved.off;
+    if (saved.home === undefined) delete process.env.PATTY_HOME;
+    else process.env.PATTY_HOME = saved.home;
+    rmSync(home, { recursive: true, force: true });
+    expect(listed).toContain("USPTO Open Data Portal (your key); EPO Open Patent Services (your key); PQAI (your key)");
+    expect(line).toContain("EPO OPS (connected)");
+    for (const name of ["USPTO Open Data Portal", "EPO Open Patent Services", "PQAI"]) expect(out).toContain(`## ${name}: CONNECTED (your account)`);
+    for (const v of Object.values(secrets)) {
+      expect(out + listed + line).not.toContain(v);
+      expect(scrub(`HTTP 401: bad token ${v}`, v)).toBe("HTTP 401: bad token [key]");
+    }
+  });
+});
+
 describe("patty_sources", () => {
   test("lists every connection, says whose accounts they are, and never prints a key", async () => {
     const { sources, sourcesLine } = await import("../src/sources.ts");
@@ -500,7 +717,11 @@ describe("patty_sources", () => {
     rmSync(home, { recursive: true, force: true });
     expect(out).toContain("SerpApi (Google Patents data): CONNECTED (your account)");
     expect(out).toContain("Patty has no accounts of its own");
-    expect(out).toContain("USPTO Open Data Portal: NOT BUILT IN");
+    expect(out).toContain("USPTO Open Data Portal: NOT CONNECTED");
+    expect(out).toContain("EPO Open Patent Services: NOT CONNECTED");
+    expect(out).toContain("PQAI: NOT CONNECTED");
+    expect(out).toContain("https://projectpq.ai/api-pricing/");
+    expect(out).not.toContain("NOT BUILT IN");
     expect(out).toContain("Clerq");
     expect(out).not.toContain("test-key-not-real");
     expect(sourcesLine()).toContain("patty_sources");

@@ -12,7 +12,7 @@ export const CLAIM_CHART_FILE = "CLAIM_CHART.md";
 type Row = { letter: string; status: "yes" | "partly" | "no"; rest: string; lineNo: number };
 type Section = { slug: string; claim: number; lineNo: number; elements: { letter: string; text: string; lineNo: number }[]; rows: Row[]; result?: { kind: "all" | "missing" | "unknown"; letters: string[]; raw: string; lineNo: number } };
 export type ClaimOutcome = { slug: string; claim: number; verdict: string; allFound: boolean };
-export type PatentSummary = { slug: string; title: string; status: string; expiration: string; owner: string; source: string; independent: number[] };
+export type PatentSummary = { slug: string; title: string; status: string; usptoStatus: string; expiration: string; owner: string; source: string; independent: number[] };
 export type ClaimChartCheck = { present: boolean; errors: string[]; warnings: string[]; outcomes: ClaimOutcome[]; patents: PatentSummary[]; citations: number };
 export type CiteChecker = (path: string, start: number, end: number, text: string, where: string) => string | null;
 
@@ -71,8 +71,9 @@ export function checkClaimChart(packet: string, cite: CiteChecker, required: boo
       r.errors.push(`${CLAIM_CHART_FILE} line ${list[0].lineNo}: references/${slug}.txt is not a stored patent. Fetch it with patty_prior_art (fetch) first; claims cannot be charted from memory.`);
       continue;
     }
-    r.patents.push({ slug, title: ref.title, status: ref.status, expiration: ref.expiration, owner: ref.owner, source: ref.source, independent: ref.independent });
+    r.patents.push({ slug, title: ref.title, status: ref.status, usptoStatus: ref.usptoStatus, expiration: ref.expiration, owner: ref.owner, source: ref.source, independent: ref.independent });
     if (notInForce(ref.status)) r.warnings.push(`${slug} is listed as "${ref.status.split(" (")[0]}". A patent that is not in force cannot be infringed from then on; confirm the status at the USPTO before relying on it.`);
+    else if (notInForce(ref.usptoStatus)) r.warnings.push(`${slug}: the USPTO's own record reads "${ref.usptoStatus.split(" (")[0]}". A patent that is not in force cannot be infringed from then on; confirm the status at the USPTO before relying on it.`);
     for (const n of ref.independent) if (!list.some((s) => s.claim === n)) r.errors.push(`${slug}: claim ${n} is independent and is not charted. Every independent claim has to be charted; avoiding one does not avoid the others.`);
 
     for (const s of list) {
@@ -119,7 +120,7 @@ export function checkClaimChart(packet: string, cite: CiteChecker, required: boo
       else if (missing.length && (res.kind !== "missing" || res.letters.slice().sort().join() !== missing.slice().sort().join())) r.errors.push(`${CLAIM_CHART_FILE} line ${res.lineNo}: the rows mark ${missing.join(", ")} as not found, so the result has to be "not found in the code: ${missing.join(", ")}".`);
       if (!missing.length) {
         r.outcomes.push({ slug, claim: s.claim, allFound: true, verdict: "EVERY ELEMENT FOUND in the code" });
-        if (!notInForce(ref.status)) r.warnings.push(`${slug} claim ${s.claim}: every element of the claim was found in the code. Do not ship or sell this as it stands on the strength of this file. Change the code so that one whole element is gone, or take it to a patent attorney.`);
+        if (!notInForce(ref.status) && !notInForce(ref.usptoStatus)) r.warnings.push(`${slug} claim ${s.claim}: every element of the claim was found in the code. Do not ship or sell this as it stands on the strength of this file. Change the code so that one whole element is gone, or take it to a patent attorney.`);
       } else r.outcomes.push({ slug, claim: s.claim, allFound: false, verdict: `not found in the code: ${missing.map((l) => `${l} ("${text(l).slice(0, 90)}")`).join("; ")}` });
     }
   }

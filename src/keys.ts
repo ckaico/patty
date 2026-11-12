@@ -21,6 +21,14 @@ export function readKey(file: string, env: string): string | null {
 
 export const serpKey = () => readKey("serpapi_key", "PATTY_SERPAPI_KEY");
 export const githubToken = () => readKey("github_token", "PATTY_GITHUB_TOKEN");
+// USPTO Open Data Portal: one key, sent only to api.uspto.gov in the X-API-KEY header.
+export const usptoKey = () => readKey("uspto_key", "PATTY_USPTO_KEY");
+// EPO Open Patent Services: a consumer key and secret, exchanged at ops.epo.org for a short-lived token.
+export const epoKey = () => readKey("epo_key", "PATTY_EPO_KEY");
+export const epoSecret = () => readKey("epo_secret", "PATTY_EPO_SECRET");
+export const epoConnected = () => !!(epoKey() && epoSecret());
+// PQAI: one token, sent only to api.projectpq.ai as the token parameter.
+export const pqaiKey = () => readKey("pqai_key", "PATTY_PQAI_KEY");
 
 // A token lifts GitHub's unauthenticated limits. It is sent only to api.github.com.
 export function githubHeaders(accept = "application/vnd.github+json"): Record<string, string> {

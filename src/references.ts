@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { githubHeaders, githubToken, serpKey } from "./keys.ts";
+import { epoConnected, epoKey, epoSecret, githubHeaders, githubToken, pqaiKey, serpKey, usptoKey } from "./keys.ts";
 export { serpKey } from "./keys.ts";
 import { today, VERSION } from "./packet.ts";
 
 // Full text of prior art references, kept in the packet so quotes can be checked against it.
-// Patents come from their Google Patents page (unofficial, public); papers from the arXiv API;
-// repositories from the GitHub API; anything else from the page itself.
+// Patents come from their Google Patents page (unofficial, public), or SerpApi's copy of it;
+// EP and WO publications from EPO Open Patent Services when the user has connected it. A US
+// patent's official status comes from the USPTO Open Data Portal when the user has a key.
+// Papers come from the arXiv API, repositories from the GitHub API, anything else from the page.
 
 const UA = `Mozilla/5.0 (compatible; patty-mcp/${VERSION})`;
 const BODY_END = "\n## Related documents";
@@ -16,6 +18,12 @@ export type Reference = {
   slug: string; kind: "patent" | "paper" | "code" | "page"; title: string; source: string;
   date?: string; dateLabel?: string; body: string; cites?: Related[]; citedBy?: Related[]; similar?: Related[];
   status?: string; expiration?: string; owner?: string; independent?: number[]; family?: string[]; via?: string;
+  // Where the Status value came from; Google Patents unless said otherwise.
+  statusFrom?: string;
+  // A US application number as the source gives it, e.g. US14/104,993.
+  applicationNumber?: string;
+  // The USPTO's own status for the application, and when that lookup did not work, why.
+  usptoStatus?: string; usptoNote?: string;
 };
 
 const ENT: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "...", mdash: "—", ndash: "–", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“" };
@@ -36,7 +44,9 @@ export function htmlToText(html: string): string {
 // Each source gets its requests one at a time with a gap between them. Sent faster, Google
 // Patents answers 503, arXiv 429 (it asks for one request every three seconds) and GitHub's
 // unauthenticated search stops after about ten a minute.
-const GAP: Record<string, number> = { "patents.google.com": 2500, "export.arxiv.org": 3200, "api.github.com": 2200 };
+// EPO OPS allows about 20 searches a minute while it is not busy (its X-Throttling-Control header);
+// the USPTO and PQAI publish no figure that could be read, so they get a modest gap.
+const GAP: Record<string, number> = { "patents.google.com": 2500, "export.arxiv.org": 3200, "api.github.com": 2200, "ops.epo.org": 3100, "api.uspto.gov": 1100, "api.projectpq.ai": 1000 };
 export const githubSearchGap = () => (githubToken() ? 2200 : 6500);
 const queue = new Map<string, Promise<void>>();
 export function pace(url: string, gap?: number): Promise<void> {
@@ -70,7 +80,24 @@ export const patentNumber = (s: string): string | null => {
 // SerpApi serves Google Patents search and patent details through an account key, without the
 // throttling the direct pages apply. The key is the user's own: PATTY_SERPAPI_KEY, or the
 // first line of ~/.patty/serpapi_key. It is never written to a packet, a log or an error.
-export const patentSource = () => (serpKey() ? "Google Patents through SerpApi (your key)" : "Google Patents directly (no key; it refuses requests after a burst)");
+// Every patent source in use, in the order results are merged.
+export function patentSources(): string[] {
+  return [
+    serpKey() ? "Google Patents through SerpApi (your key)" : "Google Patents directly (no key; it refuses requests after a burst)",
+    ...(usptoKey() ? ["USPTO Open Data Portal (your key)"] : []),
+    ...(epoConnected() ? ["EPO Open Patent Services (your key)"] : []),
+    ...(pqaiKey() ? ["PQAI (your key)"] : []),
+  ];
+}
+export const patentSource = () => patentSources().join("; ");
+
+// A secret must never reach a message, even if a server echoes it back.
+export function scrub(text: string, ...secrets: (string | null)[]): string {
+  let t = text;
+  for (const s of secrets) if (s && s.length >= 4) t = t.split(s).join("[key]");
+  return t;
+}
+const failed = (e: unknown) => ((e as Error).name === "TimeoutError" ? "timed out" : "network error");
 
 export async function serp(params: Record<string, string>): Promise<any> {
   const key = serpKey();
@@ -86,6 +113,251 @@ export async function serp(params: Record<string, string>): Promise<any> {
   const data = (await r.json().catch(() => null)) as any;
   if (!r.ok || !data || data.error) throw new Error(`SerpApi: ${String(data?.error ?? `HTTP ${r.status}`).slice(0, 160)}`);
   return data;
+}
+
+// ---------- USPTO Open Data Portal ----------
+// Official USPTO application data (the Patent File Wrapper API), from the OpenAPI file at
+// data.uspto.gov/swagger/swagger.yaml. The key goes in the X-API-KEY header to api.uspto.gov
+// and nowhere else. A 404 is the documented answer for "no matching records".
+const ODP = "https://api.uspto.gov";
+export async function odp(path: string): Promise<any> {
+  const key = usptoKey();
+  if (!key) throw new Error("no USPTO Open Data Portal key is set");
+  const url = `${ODP}${path}`;
+  await pace(url);
+  let r: Response;
+  try {
+    r = await fetch(url, { signal: AbortSignal.timeout(30000), headers: { "X-API-KEY": key, Accept: "application/json" } });
+  } catch (e) {
+    throw new Error(`the USPTO Open Data Portal did not answer (${failed(e)})`);
+  }
+  if (r.status === 404) return { count: 0, patentFileWrapperDataBag: [] };
+  const data = (await r.json().catch(() => null)) as any;
+  if (r.ok && data) return data;
+  const why = r.status === 401 || r.status === 403 ? " (the key was refused; the portal deactivates keys whose USPTO.gov profile is incomplete)" : r.status === 429 ? " (rate-limiting; try again in a minute)" : "";
+  const detail = data?.errorDetails ?? data?.message ?? data?.error;
+  throw new Error(scrub(`USPTO Open Data Portal: HTTP ${r.status}${why}${detail ? `: ${String(detail).slice(0, 160)}` : ""}`, key));
+}
+
+// "US14/104,993" or "US:14/104,993" -> "14104993". Only US application numbers.
+export function usptoApplicationNumber(raw: string | undefined): string | null {
+  const m = String(raw ?? "").trim().toUpperCase().match(/^US:?\s*(\d{2})\s*\/\s*([\d,]{3,9})$/);
+  return m ? m[1] + m[2].replace(/,/g, "") : null;
+}
+
+// Turns an Open Data Portal application response (PatentDataResponse) into one status line.
+// Exported for tests.
+export function usptoStatusFromOdp(d: any): string | null {
+  const row = (Array.isArray(d?.patentFileWrapperDataBag) ? d.patentFileWrapperDataBag : [])[0];
+  const m = row?.applicationMetaData;
+  if (!m?.applicationStatusDescriptionText) return null;
+  const parts = [
+    m.applicationStatusDate && `status date ${m.applicationStatusDate}`,
+    row.applicationNumberText && `application ${row.applicationNumberText}`,
+    m.patentNumber && `patent ${m.patentNumber}${m.grantDate ? ` granted ${m.grantDate}` : ""}`,
+  ].filter(Boolean);
+  return `${String(m.applicationStatusDescriptionText).trim()}${parts.length ? ` (${parts.join("; ")})` : ""}`;
+}
+
+// Adds the USPTO's own status to a US patent reference. Never fails the fetch.
+async function addUsptoStatus(ref: Reference): Promise<void> {
+  if (ref.kind !== "patent" || !/^US/.test(ref.slug) || !usptoKey()) return;
+  const app = usptoApplicationNumber(ref.applicationNumber);
+  const grant = ref.slug.match(/^US(\d{5,8})[BES]\d?$/)?.[1];
+  if (!app && !grant) {
+    ref.usptoNote = "not checked: no US application number was found for it";
+    return;
+  }
+  try {
+    const d = app
+      ? await odp(`/api/v1/patent/applications/${app}/meta-data`)
+      : await odp(`/api/v1/patent/applications/search?${new URLSearchParams({ q: `applicationMetaData.patentNumber:${grant}`, limit: "1" })}`);
+    const s = usptoStatusFromOdp(d);
+    if (s) ref.usptoStatus = s;
+    else ref.usptoNote = `not checked: the Open Data Portal has no record for ${app ? `application ${app}` : `patent ${grant}`}`;
+  } catch (e) {
+    ref.usptoNote = `not checked: ${(e as Error).message}`;
+  }
+}
+
+// ---------- EPO Open Patent Services ----------
+// From the OPS v3.2 reference guide (version 1.3.20) and its OpenAPI file. The consumer key and
+// secret are exchanged for a bearer token (OAuth client credentials) at the auth endpoint; the
+// token lasts about twenty minutes and is kept in memory only. OPS answers in XML.
+const OPS = "https://ops.epo.org/3.2";
+let opsToken: { value: string; until: number; for: string } | null = null;
+// Queries start together; they share one sign-in request instead of each making its own.
+let opsSignIn: Promise<string> | null = null;
+function opsAccessToken(renew = false): Promise<string> {
+  const key = epoKey();
+  if (!renew && opsToken && opsToken.for === key && Date.now() < opsToken.until) return Promise.resolve(opsToken.value);
+  if (!opsSignIn) opsSignIn = opsRequestToken().finally(() => (opsSignIn = null));
+  return opsSignIn;
+}
+async function opsRequestToken(): Promise<string> {
+  const key = epoKey(), secret = epoSecret();
+  if (!key || !secret) throw new Error("no EPO OPS key and secret are set");
+  let r: Response;
+  try {
+    r = await fetch(`${OPS}/auth/accesstoken`, {
+      method: "POST", signal: AbortSignal.timeout(20000), body: "grant_type=client_credentials",
+      headers: { Authorization: `Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    });
+  } catch (e) {
+    throw new Error(`EPO OPS did not answer the sign-in request (${failed(e)})`);
+  }
+  const text = await r.text();
+  let d: any = null;
+  try {
+    d = JSON.parse(text);
+  } catch {}
+  if (!r.ok || !d?.access_token) {
+    const msg = opsMessage(text) || d?.error_description || d?.error;
+    throw new Error(scrub(`EPO OPS refused the key and secret (HTTP ${r.status}${msg ? `: ${String(msg).slice(0, 100)}` : ""})`, key, secret));
+  }
+  opsToken = { value: String(d.access_token), until: Date.now() + (Number(d.expires_in) || 1199) * 1000 - 60000, for: key };
+  return opsToken.value;
+}
+const opsMessage = (xml: string) => xml.match(/<(?:\w+:)?message>([\s\S]*?)<\/(?:\w+:)?message>/)?.[1]?.trim() ?? "";
+
+// One OPS request. Returns the body, or null for a 404 (OPS's answer for "nothing found").
+export async function ops(path: string, accept: string, headers: Record<string, string> = {}): Promise<string | null> {
+  for (let attempt = 0; ; attempt++) {
+    const token = await opsAccessToken(attempt > 0);
+    const url = `${OPS}/rest-services${path}`;
+    await pace(url);
+    let r: Response;
+    try {
+      r = await fetch(url, { signal: AbortSignal.timeout(40000), headers: { Authorization: `Bearer ${token}`, Accept: accept, ...headers } });
+    } catch (e) {
+      throw new Error(`EPO OPS did not answer (${failed(e)})`);
+    }
+    const text = await r.text();
+    if (r.ok) return text;
+    if (r.status === 404) return null;
+    // An expired token is answered with invalid_access_token; get a new one once.
+    if (attempt === 0 && (r.status === 400 || r.status === 401) && /invalid_access_token|expired/i.test(text)) continue;
+    const quota = r.headers.get("X-Rejection-Reason");
+    const msg = opsMessage(text);
+    throw new Error(scrub(`EPO OPS: HTTP ${r.status}${msg ? ` (${msg.slice(0, 140)})` : ""}${quota ? `; quota reached: ${quota}` : ""}`, epoKey(), epoSecret(), token));
+  }
+}
+
+// OPS XML carries namespace prefixes (ops:, ftxt:); they are dropped before reading it.
+export const unprefix = (xml: string) => xml.replace(/<(\/?)[\w-]+:(?=[\w-])/g, "<$1");
+type Elem = { attrs: string; body: string };
+export const xmlElems = (xml: string, tag: string): Elem[] =>
+  [...xml.matchAll(new RegExp(`<${tag}(?=[\\s>/])([^>]*?)(?:/>|>([\\s\\S]*?)</${tag}>)`, "g"))].map((m) => ({ attrs: m[1], body: m[2] ?? "" }));
+export const xmlAttr = (attrs: string, name: string) => attrs.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1];
+const inEnglish = (list: Elem[]) => list.find((e) => xmlAttr(e.attrs, "lang")?.toLowerCase() === "en") ?? list[0];
+const isoDate = (d?: string) => (d && /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}` : d || undefined);
+const textOf = (xml?: string) => htmlToText(xml ?? "").replace(/\s*\n\s*/g, "\n").trim();
+
+// The fields Patty uses from one OPS exchange-document. Exported for the search parser.
+export function opsBiblio(docXml: string) {
+  const x = unprefix(docXml);
+  const head = x.match(/<exchange-document\b([^>]*)>/)?.[1] ?? "";
+  const pub = xmlElems(xmlElems(x, "publication-reference")[0]?.body ?? "", "document-id");
+  const docdb = pub.find((d) => xmlAttr(d.attrs, "document-id-type") === "docdb")?.body ?? "";
+  const pick = (body: string, tag: string) => textOf(xmlElems(body, tag)[0]?.body);
+  const country = xmlAttr(head, "country") ?? pick(docdb, "country");
+  const number = `${country}${xmlAttr(head, "doc-number") ?? pick(docdb, "doc-number")}${xmlAttr(head, "kind") ?? pick(docdb, "kind")}`;
+  const priorities = xmlElems(x, "priority-claim").map((p) => pick(p.body, "date")).filter((d) => /^\d{8}$/.test(d)).sort();
+  const appDate = pick(xmlElems(x, "application-reference")[0]?.body ?? "", "date");
+  const applicants = xmlElems(x, "applicant");
+  const applicant = applicants.find((a) => xmlAttr(a.attrs, "data-format") === "original") ?? applicants[0];
+  return {
+    number, title: textOf(inEnglish(xmlElems(x, "invention-title"))?.body), abstract: textOf(inEnglish(xmlElems(x, "abstract"))?.body),
+    published: isoDate(pick(docdb, "date")), priority: isoDate(priorities[0]), filed: isoDate(appDate),
+    applicant: applicant ? pick(applicant.body, "name").replace(/\s*\[[A-Z]{2}\]$/, "") || undefined : undefined,
+  };
+}
+
+// Claims come as <claim num="0001"><claim-text>...</claim-text></claim>, or, in the text-only
+// format, as one block with the numbers inside the text. Both are split into numbered claims.
+export function claimsFromOps(xml: string): { n: number; text: string }[] {
+  const x = unprefix(xml);
+  const set = inEnglish(xmlElems(x, "claims"));
+  if (!set) return [];
+  const items = xmlElems(set.body, "claim").map((c, i) => ({ n: Number(xmlAttr(c.attrs, "num")) || i + 1, text: textOf(c.body).replace(/\s*\n\s*/g, " ") }));
+  if (items.length !== 1 || !/(^|\s)2\s?\.\s/.test(items[0].text)) return items.filter((c) => c.text).map((c) => ({ n: c.n, text: c.text.replace(/^\d+\s?\.\s*/, "") }));
+  const all = items[0].text;
+  const out: { n: number; text: string }[] = [];
+  let from = 0;
+  for (let n = 1; ; n++) {
+    const next = all.slice(from).search(new RegExp(`(^|\\s)${n + 1}\\s?\\.\\s`));
+    const piece = next < 0 ? all.slice(from) : all.slice(from, from + next);
+    out.push({ n, text: piece.trim().replace(new RegExp(`^${n}\\s?\\.\\s*`), "") });
+    if (next < 0) break;
+    from += next;
+  }
+  return out.filter((c) => c.text);
+}
+
+export function descriptionFromOps(xml: string): string {
+  const d = inEnglish(xmlElems(unprefix(xml), "description"));
+  return d ? textOf(d.body) : "";
+}
+
+// Turns OPS biblio, claims and description responses into a stored reference. Exported for tests.
+export function referenceFromOps(id: string, biblioXml: string, claimsXml: string, descriptionXml: string): Reference {
+  const doc = xmlElems(unprefix(biblioXml), "exchange-document")[0];
+  const b = opsBiblio(doc ? `<exchange-document${doc.attrs}>${doc.body}</exchange-document>` : biblioXml);
+  const independent: number[] = [];
+  const claimBlocks = claimsFromOps(claimsXml).map((c) => {
+    const text = `${c.n}. ${c.text}`;
+    const dep = isDependent(text);
+    if (!dep) independent.push(c.n);
+    return `### Claim ${c.n} (${dep ? "dependent" : "independent"})\n${text}`;
+  });
+  const description = descriptionFromOps(descriptionXml);
+  const body = [`## Abstract\n${b.abstract}`, `## Claims\n${claimBlocks.join("\n\n")}`, `## Description\n${description || "Not retrieved. Read it at the source before relying on a \"no\"."}`].join("\n\n");
+  return {
+    slug: id, kind: "patent", title: b.title || id, source: `https://worldwide.espacenet.com/patent/search?q=pn%3D${id}`,
+    date: b.priority ?? b.filed, dateLabel: b.priority ? "priority date" : "filing date", body, owner: b.applicant, independent,
+    via: "EPO Open Patent Services", statusFrom: "EPO OPS",
+  };
+}
+
+// EP and WO publication numbers in the epodoc form OPS takes: EP1000000.A1, WO2019123456.A1.
+export const opsNumber = (id: string) => {
+  const m = id.match(/^(EP|WO)(\d{6,})([A-Z]\d?)?$/);
+  return m ? `${m[1]}${m[2]}${m[3] ? `.${m[3]}` : ""}` : null;
+};
+
+async function fetchPatentOps(id: string): Promise<Reference> {
+  const base = `/published-data/publication/epodoc/${opsNumber(id)}`;
+  const biblio = await ops(`${base}/biblio`, "application/exchange+xml");
+  if (!biblio) throw new Error("EPO OPS has no record of this publication number");
+  const claims = (await ops(`${base}/claims`, "application/fulltext+xml")) ?? "";
+  const description = (await ops(`${base}/description`, "application/fulltext+xml")) ?? "";
+  const ref = referenceFromOps(id, biblio, claims, description);
+  if (!ref.body.includes("### Claim")) throw new Error("EPO OPS returned no claims for this publication");
+  return ref;
+}
+
+// ---------- PQAI ----------
+// Semantic search over patents, from the API guide at api.projectpq.ai/docs. The token is a
+// query parameter, so a failed request is reported without its address.
+export async function pqai(route: string, params: Record<string, string>): Promise<any> {
+  const key = pqaiKey();
+  if (!key) throw new Error("no PQAI token is set");
+  const url = `https://api.projectpq.ai${route}?${new URLSearchParams({ ...params, token: key })}`;
+  await pace(url);
+  let r: Response;
+  try {
+    r = await fetch(url, { signal: AbortSignal.timeout(40000), headers: { Accept: "application/json" } });
+  } catch (e) {
+    throw new Error(`PQAI did not answer (${failed(e)})`);
+  }
+  const text = await r.text();
+  let data: any = null;
+  try {
+    data = JSON.parse(text);
+  } catch {}
+  if (r.ok && data) return data;
+  const msg = typeof data === "string" ? data : data?.message ?? data?.error ?? data?.detail;
+  throw new Error(scrub(`PQAI: HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (the token was refused)" : ""}${msg ? `: ${String(msg).slice(0, 140)}` : ""}`, key));
 }
 
 const isDependent = (text: string) => /^\d+\.\s.{0,140}\b(?:of|in|to|by|as claimed in|as recited in|according to)\s+(?:any\s+(?:one\s+)?of\s+)?claims?\s+\d+/i.test(text);
@@ -116,6 +388,7 @@ export function referenceFromSerp(id: string, d: any, descriptionHtml: string): 
     date: d.priority_date ?? d.filing_date, dateLabel: d.priority_date ? "priority date" : "filing date", body,
     cites: rel(d.patent_citations?.original), citedBy: rel(d.cited_by?.original), similar: rel((d.similar_documents ?? []).filter((x: any) => x?.is_patent !== false)),
     status: mine?.legal_status, expiration: expiry, owner: Array.isArray(d.assignees) ? d.assignees[0] : undefined, independent, family, via: "SerpApi",
+    applicationNumber: d.application_number ?? mine?.application_number,
   };
 }
 
@@ -138,7 +411,27 @@ async function fetchPatentKeyed(id: string): Promise<Reference> {
   return ref;
 }
 
+// EP and WO publications are read from EPO OPS first when it is connected: it is the EPO's own
+// full text. OPS has no US full text, so US patents never go there.
 async function fetchPatent(id: string): Promise<Reference> {
+  let ref: Reference;
+  if (epoConnected() && opsNumber(id)) {
+    try {
+      ref = await fetchPatentOps(id);
+    } catch (e) {
+      try {
+        ref = await fetchPatentGoogle(id);
+      } catch (e2) {
+        throw new Error(`EPO OPS: ${(e as Error).message}; and Google Patents: ${(e2 as Error).message}`);
+      }
+      ref.via = `${ref.via ?? "the Google Patents page"}, because EPO OPS failed (${(e as Error).message})`;
+    }
+  } else ref = await fetchPatentGoogle(id);
+  await addUsptoStatus(ref);
+  return ref;
+}
+
+async function fetchPatentGoogle(id: string): Promise<Reference> {
   if (serpKey()) {
     try {
       return await fetchPatentKeyed(id);
@@ -190,6 +483,7 @@ async function fetchPatentDirect(id: string): Promise<Reference> {
     slug: id, kind: "patent", title, source, date: priority ?? filing, dateLabel: priority ? "priority date" : "filing date", body,
     cites: rows("backwardReferencesOrig"), citedBy: rows("forwardReferencesOrig"), similar: rows("similarDocuments"),
     status: prop("status") ?? prop("ifiStatus"), expiration: html.match(/<time itemprop="expiration"[^>]*>([^<]*)/)?.[1] ?? prop("expiration"), owner: prop("assigneeCurrent") ?? prop("assigneeOriginal"), independent,
+    applicationNumber: html.match(/<meta name="citation_patent_application_number" content="([^"]*)"/)?.[1],
   };
 }
 
@@ -250,7 +544,11 @@ export function saveReference(packet: string, ref: Reference): string {
     `Fetched: ${today()}`,
     ...(ref.kind === "patent"
       ? [
-          `Status: ${ref.status ?? "not listed"} (as Google Patents lists it; confirm in USPTO Patent Center before relying on it)`,
+          ref.statusFrom === "EPO OPS"
+            ? `Status: ${ref.status ?? "not listed"} (EPO OPS bibliographic data carries no legal status; confirm in the European Patent Register or the national register before relying on it)`
+            : `Status: ${ref.status ?? "not listed"} (as Google Patents lists it; confirm in USPTO Patent Center before relying on it)`,
+          ...(ref.applicationNumber ? [`Application number: ${ref.applicationNumber}`] : []),
+          ...(ref.usptoStatus ? [`USPTO status (official, checked ${today()}): ${ref.usptoStatus}`] : ref.usptoNote ? [`USPTO status: ${ref.usptoNote}`] : []),
           `Expiration: ${ref.expiration ?? "not listed"}`,
           `Owner: ${ref.owner ?? "not listed"}`,
           `Independent claims: ${ref.independent?.length ? ref.independent.join(", ") : "not identified"}`,
@@ -270,7 +568,7 @@ export function saveReference(packet: string, ref: Reference): string {
   return path;
 }
 
-export type StoredReference = { slug: string; title: string; source: string; date: string; kind: string; body: string; status: string; expiration: string; owner: string; independent: number[]; claims: Map<number, string> };
+export type StoredReference = { slug: string; title: string; source: string; date: string; kind: string; body: string; status: string; usptoStatus: string; expiration: string; owner: string; independent: number[]; claims: Map<number, string> };
 export function readReference(packet: string, slug: string): StoredReference | null {
   const path = join(referencesDir(packet), `${slug}.txt`);
   if (!existsSync(path)) return null;
@@ -284,7 +582,7 @@ export function readReference(packet: string, slug: string): StoredReference | n
   for (const m of claimSection.matchAll(/### Claim (\d+) \((?:in)?dependent\)\n([\s\S]*?)(?=\n### Claim \d+ |$)/g)) claims.set(Number(m[1]), m[2].trim());
   return {
     slug, title: head("Title"), source: head("Source"), date: head("Date"), kind: head("Kind"), body,
-    status: head("Status"), expiration: head("Expiration"), owner: head("Owner"),
+    status: head("Status"), usptoStatus: head("USPTO status \\(official, checked [\\d-]+\\)"), expiration: head("Expiration"), owner: head("Owner"),
     independent: [...head("Independent claims").matchAll(/\d+/g)].map((m) => Number(m[0])), claims,
   };
 }

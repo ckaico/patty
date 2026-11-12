@@ -61,7 +61,7 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
       "",
     ];
     for (const p of result.patents) {
-      L.push(`## ${p.slug}: ${p.title}`, "", `- Owner: ${p.owner || "not listed"}`, `- Status: ${p.status || "not listed"}`, `- Expiration: ${p.expiration || "not listed"}`, `- Independent claims: ${p.independent.join(", ") || "not identified"}`, `- Source: ${p.source}`, "");
+      L.push(`## ${p.slug}: ${p.title}`, "", `- Owner: ${p.owner || "not listed"}`, `- Status: ${p.status || "not listed"}`, ...(p.usptoStatus ? [`- USPTO status (official, from the Open Data Portal): ${p.usptoStatus}`] : []), `- Expiration: ${p.expiration || "not listed"}`, `- Independent claims: ${p.independent.join(", ") || "not identified"}`, `- Source: ${p.source}`, "");
       for (const o of result.claimOutcomes.filter((x) => x.slug === p.slug)) L.push(`- Claim ${o.claim}: ${o.verdict}`);
       L.push("");
     }
@@ -70,7 +70,7 @@ export async function build(packetPath: string, given: BuildFacts): Promise<stri
     if (all.length) L.push(`- ${all.map((o) => `${o.slug} claim ${o.claim}`).join(", ")}: every element was found in the code. Do not ship or sell on the strength of this file. Change the code so one whole element is gone (see Options in CLAIM_CHART.md), then run the chart again; or take it to a patent attorney.`);
     L.push(
       "- Where an element was not found: read that row in CLAIM_CHART.md and decide whether you agree. The \"no\" is a reading, not a checked fact, and the whole result rests on it.",
-      "- Confirm each patent's status and expiration in USPTO Patent Center. The values above come from Google Patents.",
+      "- Confirm each patent's status and expiration in USPTO Patent Center. Status and expiration above come from Google Patents (or, for EP and WO publications, from EPO OPS, which gives no status); a USPTO status line is the application status the USPTO's Open Data Portal gave on the day the patent was fetched.",
       "- If the code changes, run the chart again. It describes the code on the day it was written.",
       "",
       "## What this does not cover",

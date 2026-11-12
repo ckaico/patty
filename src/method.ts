@@ -230,7 +230,9 @@ Pass packet_path (the packet folder reported at the top of this message) to ever
    file starts with the patent's status, expiration, owner and its independent claims.
 2. Tell the human at once if a patent is listed as expired, abandoned or only a pending
    application, or is not a US patent. Status comes from Google Patents and is
-   unverified; the human confirms it at the USPTO.
+   unverified. A "USPTO status (official ...)" line, when the file has one, is the
+   USPTO's own application status, read from its Open Data Portal on the date shown.
+   Either way the human confirms it at the USPTO.
 3. Read the claims in references/, then the description for how the patent uses each
    term. Read the repo code that does the same job.
 4. Write patty-packet/CLAIM_CHART.md (format below), one section per independent claim.
